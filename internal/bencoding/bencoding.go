@@ -2,40 +2,10 @@ package bencoding
 
 import (
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
 )
 
-func bencodeString(data string) string {
-	return fmt.Sprintf("%d:%s", len(data), data)
-}
-
-func bencodeInteger(data int) string {
-	return fmt.Sprintf("i%se", strconv.Itoa(data))
-}
-
-func bencodeIntegerList(data []int) string {
-
-	output := "i"
-	for _, el := range data {
-		output += bencodeInteger(el)
-	}
-
-	output += "e"
-	return output
-}
-
-func bencodeStringList(data []string) string {
-
-	output := "l"
-	for _, el := range data {
-		output += bencodeString(el)
-	}
-
-	output += "e"
-	return output
-}
 
 func ParseString(data string) (string, string, error) {
 	colonIndex := strings.IndexByte(data, ':')
@@ -160,7 +130,6 @@ func ParseBencodedObject(data string) (BencodedObject, string, error) {
 		}, data, nil
 
 	default:
-		// String
 		var str string
 		str, data, err = ParseString(data)
 		if err != nil {
@@ -199,7 +168,6 @@ func ParseList(data string) ([]BencodedObject, string, error) {
 		list = append(list, obj)
 		data = remaining
 	}
-
 	return nil, "", errors.New("list not terminated with 'e'")
 }
 
