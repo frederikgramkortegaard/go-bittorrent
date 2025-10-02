@@ -19,17 +19,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	dict, remaining, err := bencoding.ParseDict(string(fileData))
+	torrent, err := bencoding.ParseTorrentFile(string(fileData))
 	if err != nil {
-		fmt.Println("Error:", err)
-		return
+		fmt.Println("Error parsing torrent file:", err)
+		os.Exit(1)
 	}
 
-	if len(remaining) > 0 {
-		fmt.Printf("Warning: %d bytes of data remaining after parsing\n\n", len(remaining))
-	}
-
-	printDict(dict, 0)
+	fmt.Printf("File Mode: %s\n\n", torrent.TFileMode)
+	printDict(torrent.Data, 0)
 }
 
 func printObject(obj bencoding.BencodedObject, indent int) {
