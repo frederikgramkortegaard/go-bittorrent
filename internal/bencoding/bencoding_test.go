@@ -20,7 +20,7 @@ func TestParseInteger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseInteger failed: %v", err)
 	}
-	if i != 42 {
+	if i != int64(42) {
 		t.Errorf("Expected 42, got %d", i)
 	}
 	if remaining != "" {
@@ -111,7 +111,7 @@ func TestParseNestedStructure(t *testing.T) {
 	}
 
 	// Check age
-	if age, ok := dict["age"]; !ok || age.IntVal == nil || *age.IntVal != 30 {
+	if age, ok := dict["age"]; !ok || age.IntVal == nil || *age.IntVal != int64(30) {
 		t.Error("Expected age=>30")
 	}
 

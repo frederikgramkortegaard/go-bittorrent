@@ -37,7 +37,7 @@ func ParseString(data string) (string, string, error) {
 	return string([]byte(data[start:end])), data[end:], nil
 }
 
-func ParseInteger(data string) (int, string, error) {
+func ParseInteger(data string) (int64, string, error) {
 	if len(data) < 3 {
 		return 0, "", errors.New("data is too short to represent a bencoded integer")
 	}
@@ -68,7 +68,7 @@ func ParseInteger(data string) (int, string, error) {
 		return 0, "", err
 	}
 
-	return int(i), data[eIndex+1:], nil
+	return i, data[eIndex+1:], nil
 }
 
 type BenType string
@@ -78,12 +78,11 @@ const (
 	BenInteger BenType = "BenInteger"
 	BenList    BenType = "BenList"
 	BenDict    BenType = "BenDict"
-	BenObject  BenType = "BenObject"
 )
 
 type BencodedObject struct {
 	Typ    BenType
-	IntVal *int
+	IntVal *int64
 	StrVal *string
 	List   []BencodedObject
 	Dict   map[string]BencodedObject
@@ -97,7 +96,7 @@ func ParseBencodedObject(data string) (BencodedObject, string, error) {
 	var err error
 	switch data[0] {
 	case 'i':
-		var i int
+		var i int64
 		i, data, err = ParseInteger(data)
 		if err != nil {
 			return BencodedObject{}, "", err
