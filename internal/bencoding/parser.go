@@ -2,7 +2,10 @@
 // https://wiki.theory.org/BitTorrentSpecification#Metainfo_File_Structure
 package bencoding
 
-import "errors"
+import (
+	"crypto/sha1"
+	"errors"
+)
 
 type FileMode string
 
@@ -14,12 +17,15 @@ const (
 type TorrentFile struct {
 	Data      map[string]BencodedObject
 	TFileMode FileMode
+	InfoBytes []byte   // Raw bencoded bytes of the info dict
+	InfoHash  [20]byte // SHA1 hash of InfoBytes
 }
 
-// @TODO : Maybe make a validator, e.g. that each piece has a sha etc.
+// ValidateTorrentFile ensures that all require fields exists in a given TorrentFile @TODO : Maybe make a validator, e.g. that each piece has a sha etc.
 func ValidateTorrentFile(tf *TorrentFile) error {
 	return nil
 }
+
 func ParseTorrentFile(data string) (TorrentFile, error) {
 
 	metainfo, _, err := ParseDict(data)
@@ -27,11 +33,20 @@ func ParseTorrentFile(data string) (TorrentFile, error) {
 		return TorrentFile{}, err
 	}
 
-	var fmode FileMode = SingleFileMode
+	// Extract raw info dict bytes for hash calculation
+	infoBytes, err := ExtractInfoDictBytes(data)
+	if err != nil {
+		return TorrentFile{}, err
+	}
+
+	// Calculate info hash
+	infoHash := sha1.Sum(infoBytes)
+
+	var fmode = SingleFileMode
 
 	val, ok := metainfo["info"]
 	if !ok {
-		return TorrentFile{}, errors.New("Invalid metainfo section")
+		return TorrentFile{}, errors.New("invalid metainfo section")
 	}
 
 	if val.Typ != BenDict {
@@ -46,6 +61,8 @@ func ParseTorrentFile(data string) (TorrentFile, error) {
 	tf := TorrentFile{
 		Data:      metainfo,
 		TFileMode: fmode,
+		InfoBytes: infoBytes,
+		InfoHash:  infoHash,
 	}
 
 	if err := ValidateTorrentFile(&tf); err != nil {

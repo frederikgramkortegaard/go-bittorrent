@@ -213,3 +213,57 @@ func ParseDict(data string) (map[string]BencodedObject, string, error) {
 	return nil, "", errors.New("dict not terminated with 'e'")
 
 }
+
+// ExtractInfoDictBytes extracts the raw bencoded bytes of the "info" dictionary
+// from a torrent metainfo file. This is needed to calculate the info hash.
+func ExtractInfoDictBytes(data string) ([]byte, error) {
+	if len(data) < 2 || data[0] != 'd' {
+		return nil, errors.New("not a dict")
+	}
+
+	pos := 1 // skip 'd'
+
+	for pos < len(data) {
+		if data[pos] == 'e' {
+			return nil, errors.New("no info key found")
+		}
+
+		// Parse the key
+		key, remaining, err := ParseString(data[pos:])
+		if err != nil {
+			return nil, err
+		}
+
+		// Calculate how many bytes the key consumed
+		keyLen := len(data[pos:]) - len(remaining)
+		pos += keyLen
+
+		// Is this the "info" key?
+		if key == "info" {
+			infoStart := pos
+
+			// Parse value to find where it ends
+			_, remaining, err := ParseBencodedObject(data[pos:])
+			if err != nil {
+				return nil, err
+			}
+
+			// Calculate how many bytes the value consumed
+			valueLen := len(data[pos:]) - len(remaining)
+			infoEnd := pos + valueLen
+
+			return []byte(data[infoStart:infoEnd]), nil
+		}
+
+		// Not "info", skip the value
+		_, remaining, err = ParseBencodedObject(data[pos:])
+		if err != nil {
+			return nil, err
+		}
+
+		valueLen := len(data[pos:]) - len(remaining)
+		pos += valueLen
+	}
+
+	return nil, errors.New("info key not found")
+}

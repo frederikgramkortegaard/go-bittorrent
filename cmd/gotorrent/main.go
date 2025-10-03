@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"gotorrent/internal/bencoding"
+	"gotorrent/internal/libnet"
+	"log"
 	"os"
 )
 
@@ -26,46 +28,23 @@ func main() {
 	}
 
 	fmt.Printf("File Mode: %s\n\n", torrent.TFileMode)
-	printDict(torrent.Data, 0)
-}
+	bencoding.PrintDict(torrent.Data, 0)
 
-func printObject(obj bencoding.BencodedObject, indent int) {
-	prefix := ""
-	for i := 0; i < indent; i++ {
-		prefix += "  "
+	// Setup a Client
+	client := libnet.NewClient()
+	response, err := libnet.SendTrackerRequest(client, torrent, libnet.SendTrackerRequestParams{
+		TrackerAddress: *torrent.Data["announce"].StrVal,
+		PeerID:         client.ID,
+		Event:          "started",
+		Port:           6881,
+		Uploaded:       0,
+		Downloaded:     0,
+		Left:           100, // TODO: calculate from torrent
+		Compact:        false,
+	})
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	switch obj.Typ {
-	case bencoding.BenString:
-		if obj.StrVal != nil {
-			fmt.Printf("%s\n", *obj.StrVal)
-		}
-	case bencoding.BenInteger:
-		if obj.IntVal != nil {
-			fmt.Printf("%d\n", *obj.IntVal)
-		}
-	case bencoding.BenList:
-		fmt.Println("[")
-		for _, item := range obj.List {
-			fmt.Print(prefix + "  ")
-			printObject(item, indent+1)
-		}
-		fmt.Println(prefix + "]")
-	case bencoding.BenDict:
-		fmt.Println("{")
-		printDict(obj.Dict, indent+1)
-		fmt.Println(prefix + "}")
-	}
-}
-
-func printDict(dict map[string]bencoding.BencodedObject, indent int) {
-	prefix := ""
-	for i := 0; i < indent; i++ {
-		prefix += "  "
-	}
-
-	for key, val := range dict {
-		fmt.Printf("%s%s: ", prefix, key)
-		printObject(val, indent)
-	}
+	bencoding.PrintDict(response, 0)
 }
