@@ -80,10 +80,11 @@ const (
 	BenDict    BenType = "BenDict"
 )
 
-// @NOTE : We could instead of this, use the interface approach and reduce the 
-// allocations (from the heap-pointers) but since most .torrent files are relatively small
-// the self-documentation, compile-time type-checking, and very clear definition of this approach
-// is what we're going to prefer
+// BencodedObject is a dynamic type container, which allows us to have e.g. lists or dictionaries
+// with values of alternating types. @NOTE : We could instead of this, use the interface approach
+// and reduce the allocations (from the heap-pointers) but since most .torrent files are relatively
+// small the self-documentation, compile-time type-checking, and very clear definition of this
+// approach is what we're going to prefer
 type BencodedObject struct {
 	Typ    BenType
 	IntVal *int64
@@ -145,7 +146,7 @@ func ParseBencodedObject(data string) (BencodedObject, string, error) {
 	}
 }
 
-// Recursively parse a Bencoded list of objects
+// ParseList recursively parses a Bencoded list of objects from a given string
 func ParseList(data string) ([]BencodedObject, string, error) {
 	if len(data) < 2 {
 		return nil, "", errors.New("data is not long enough to contain a list")
@@ -174,6 +175,7 @@ func ParseList(data string) ([]BencodedObject, string, error) {
 	return nil, "", errors.New("list not terminated with 'e'")
 }
 
+// ParseDict recursively parses a Bencoded dict of objects from a string
 func ParseDict(data string) (map[string]BencodedObject, string, error) {
 	if len(data) < 2 {
 		return nil, "", errors.New("data is not long enough to contain a dict")
