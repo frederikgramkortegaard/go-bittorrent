@@ -80,6 +80,10 @@ const (
 	BenDict    BenType = "BenDict"
 )
 
+// @NOTE : We could instead of this, use the interface approach and reduce the 
+// allocations (from the heap-pointers) but since most .torrent files are relatively small
+// the self-documentation, compile-time type-checking, and very clear definition of this approach
+// is what we're going to prefer
 type BencodedObject struct {
 	Typ    BenType
 	IntVal *int64
@@ -179,7 +183,7 @@ func ParseDict(data string) (map[string]BencodedObject, string, error) {
 		return nil, "", errors.New("improperly formatted dict, does not start with 'd'")
 	}
 
-	dict := make(map[string]BencodedObject, 0)
+	dict := make(map[string]BencodedObject)
 
 	data = data[1:]
 	for len(data) > 0 {
