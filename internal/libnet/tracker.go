@@ -19,7 +19,8 @@ var (
 	ErrNoAnnounceInURL = errors.New("scrape request not supported by tracker: 'announce' not found in URL")
 )
 
-// https://wiki.theory.org/BitTorrentSpecification#Tracker_.27scrape.27_Convention
+// GetScrapeURLFromAnnounceURL converts a tracker announce URL to a scrape URL.
+// See https://wiki.theory.org/BitTorrentSpecification#Tracker_.27scrape.27_Convention
 func GetScrapeURLFromAnnounceURL(announceURL string) (string, error) {
 
 	lastSlash := strings.LastIndexByte(announceURL, '/')
@@ -43,7 +44,7 @@ func GetScrapeURLFromAnnounceURL(announceURL string) (string, error) {
 
 }
 
-// Tracker Scrape Request
+// SendTrackerScrapeRequest sends a scrape request to the tracker to get statistics about torrents.
 func SendTrackerScrapeRequest(trackerAddress string, infoHashes []string) (map[string]bencoding.BencodedObject, error) {
 
 	// Get the scrape URL from the Tracker if it's possible
@@ -135,7 +136,7 @@ func SendTrackerScrapeRequest(trackerAddress string, infoHashes []string) (map[s
 	return data, nil
 }
 
-// Tracker Regular Request
+// SendTrackerRequestParams contains the parameters for a regular tracker announce request.
 type SendTrackerRequestParams struct {
 
 	// Target
@@ -159,7 +160,9 @@ type SendTrackerRequestParams struct {
 	TrackerID string // OPTIONAL: Sent as 'trackerid' if non-empty
 }
 
-// Note that all binary data in the URL (particularly info_hash and peer_id) must be properly escaped. This means any byte not in the set 0-9, a-z, A-Z, '.', '-', '_' and '~', must be encoded using the "%nn" format, where nn is the hexadecimal value of the byte. (See RFC1738 for details.)
+// HexEncode encodes binary data for use in URLs according to RFC1738.
+// All bytes not in the set 0-9, a-z, A-Z, '.', '-', '_' and '~' are encoded
+// using the "%nn" format, where nn is the hexadecimal value of the byte.
 func HexEncode(data string) string {
 	result := ""
 	// Iterate over bytes, not runes (important for binary data)
@@ -178,6 +181,7 @@ func HexEncode(data string) string {
 	return result
 }
 
+// FormatQuery formats the tracker request parameters as a URL query string.
 func (s *SendTrackerRequestParams) FormatQuery() string {
 
 	out := fmt.Sprintf("info_hash=%s&peer_id=%s&port=%d&uploaded=%d&downloaded=%d&left=%d&compact=%d",
@@ -211,6 +215,7 @@ func (s *SendTrackerRequestParams) FormatQuery() string {
 
 }
 
+// SendTrackerRequest sends a regular announce request to the tracker.
 func SendTrackerRequest(c *Client, torrent bencoding.TorrentFile, params SendTrackerRequestParams) (map[string]bencoding.BencodedObject, error) {
 	// Use info hash from torrent file as raw binary string
 	params.InfoHash = string(torrent.InfoHash[:])
