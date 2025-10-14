@@ -2,15 +2,59 @@ package libnet
 
 import (
 	"bufio"
-	"time"
+	"errors"
 	"fmt"
 	"gotorrent/internal/bencoding"
 	"io"
 	"net"
 	"net/url"
 	"strings"
+	"time"
 )
 
+// https://wiki.theory.org/BitTorrentSpecification#Tracker_.27scrape.27_Convention
+func GetScrapeURLFromAnnounceURL(announceURL string) (string, error) {
+
+	lastSlash := strings.LastIndexByte(announceURL, '/')
+	if lastSlash == -1 {
+		return "", errors.New("scrape request not supported by tracker")
+	}
+
+
+	// 8 is the length of the word 'announce' which we will check for
+	if lastSlash + 8 >= len(announceURL) {
+		return "", errors.New("scrape request not supported by tracker")
+	}
+
+
+	fmt.Println(announceURL[lastSlash:lastSlash+9])
+
+	if announceURL[lastSlash:lastSlash+9] != "/announce"{
+		return "", errors.New("scrape request not supported by tracker")
+	}
+
+	scrapeURL := announceURL[:lastSlash] + strings.Replace(announceURL[lastSlash:], "announce", "scrape", -1)
+	fmt.Println(scrapeURL)
+
+	return scrapeURL, nil
+
+}
+
+// Tracker Scrape Request
+func SendTrackerScrapeRequest(trackerAddress string, infoHash string) (map[string]bencoding.BencodedObject, error) {
+
+	// Get the scrape URL from the Tracker if it's possible
+	scrapeURL, err := GetScrapeURLFromAnnounceURL(trackerAddress)
+	fmt.Println(scrapeURL)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+
+	return nil, nil
+}
+
+// Tracker Regular Request
 type SendTrackerRequestParams struct {
 
 	// Target

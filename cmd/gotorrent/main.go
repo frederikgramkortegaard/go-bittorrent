@@ -47,4 +47,6 @@ func main() {
 	}
 
 	bencoding.PrintDict(response, 0)
+
+	_, err = libnet.SendTrackerScrapeRequest("http://p4p.arenabg.com:1337/announce", "")
 }
