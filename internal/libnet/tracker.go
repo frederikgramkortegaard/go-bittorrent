@@ -14,9 +14,9 @@ import (
 
 // Custom error types for tracker operations
 var (
-	ErrNoSlashInURL       = errors.New("scrape request not supported by tracker: no slash in URL")
-	ErrURLTooShort        = errors.New("scrape request not supported by tracker: URL too short")
-	ErrNoAnnounceInURL    = errors.New("scrape request not supported by tracker: 'announce' not found in URL")
+	ErrNoSlashInURL    = errors.New("scrape request not supported by tracker: no slash in URL")
+	ErrURLTooShort     = errors.New("scrape request not supported by tracker: URL too short")
+	ErrNoAnnounceInURL = errors.New("scrape request not supported by tracker: 'announce' not found in URL")
 )
 
 // https://wiki.theory.org/BitTorrentSpecification#Tracker_.27scrape.27_Convention
@@ -27,14 +27,13 @@ func GetScrapeURLFromAnnounceURL(announceURL string) (string, error) {
 		return "", ErrNoSlashInURL
 	}
 
-
 	// 8 is the length of the word 'announce' which we will check for
-	if lastSlash + 8 >= len(announceURL) {
+	if lastSlash+8 >= len(announceURL) {
 		return "", ErrURLTooShort
 	}
 
 	// If scrape is supported, the slash is always followed by 'announce'
-	if announceURL[lastSlash:lastSlash+9] != "/announce"{
+	if announceURL[lastSlash:lastSlash+9] != "/announce" {
 		return "", ErrNoAnnounceInURL
 	}
 
@@ -45,17 +44,95 @@ func GetScrapeURLFromAnnounceURL(announceURL string) (string, error) {
 }
 
 // Tracker Scrape Request
-func SendTrackerScrapeRequest(trackerAddress string, infoHash string) (map[string]bencoding.BencodedObject, error) {
+func SendTrackerScrapeRequest(trackerAddress string, infoHashes []string) (map[string]bencoding.BencodedObject, error) {
 
 	// Get the scrape URL from the Tracker if it's possible
 	scrapeURL, err := GetScrapeURLFromAnnounceURL(trackerAddress)
-	fmt.Println(scrapeURL)
 	if err != nil {
 		fmt.Println(err)
 	}
 
+	params := ""
+	if len(infoHashes) != 0 {
+		for _, hash := range infoHashes {
+			params += fmt.Sprintf("info_hash=%s&", HexEncode(hash))
+		}
+		params = params[:len(params)-1]
+	}
 
-	return nil, nil
+	fmt.Println(scrapeURL)
+
+	u, err := url.Parse(scrapeURL)
+	if err != nil {
+		fmt.Println("URL parse error:", err)
+		return nil, err
+	}
+
+	// Extract host:port for TCP connection
+	host := u.Host
+	if u.Port() == "" {
+		// Default HTTP port if not specified
+		host = u.Hostname() + ":80"
+	}
+
+	// Construct HTTP GET request with path from URL
+	path := u.Path
+	if path == "" {
+		path = "/"
+	}
+	request := fmt.Sprintf("GET %s?%s HTTP/1.1\r\n", path, params) +
+		fmt.Sprintf("Host: %s\r\n", u.Hostname()) +
+		"User-Agent: MyTorrentClient/0.1\r\n" +
+		"Connection: close\r\n" +
+		"\r\n"
+
+		fmt.Println(request)
+	// Open TCP connection to tracker
+	d := net.Dialer{Timeout: 30 * time.Second}
+	conn, err := d.Dial("tcp", host)
+	if err != nil {
+		fmt.Println("Connection error:", err)
+		return nil, err
+	}
+	defer conn.Close()
+
+	// Send the raw HTTP GET request
+	_, err = conn.Write([]byte(request))
+	if err != nil {
+		fmt.Println("Write error:", err)
+		return nil, err
+	}
+
+	fmt.Println("----")
+	// Read and print the response
+	reader := bufio.NewReader(conn)
+
+	// Read headers
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			break
+		}
+		fmt.Print(line)
+		// Empty line marks end of headers
+		if line == "\r\n" || line == "\n" {
+			break
+		}
+	}
+
+	// Read body
+	fmt.Println("Body:")
+	buf := new(strings.Builder)
+	_, err = io.Copy(buf, reader)
+	if err != nil {
+		return nil, err
+	}
+
+	data, _, err := bencoding.ParseDict(buf.String())
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 // Tracker Regular Request

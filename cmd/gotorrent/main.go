@@ -46,7 +46,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	bencoding.PrintDict(response, 0)
+	_ = response
+//bencoding.PrintDict(response, 0)
 
-	_, err = libnet.SendTrackerScrapeRequest("http://p4p.arenabg.com:1337/announce", "")
+	fmt.Println("\n\n\n\n\n-----LLL--")
+	dat, err := libnet.SendTrackerScrapeRequest("http://p4p.arenabg.com:1337/announce", []string{string(torrent.InfoHash[:])})
+	bencoding.PrintDict(dat, 0)
 }
