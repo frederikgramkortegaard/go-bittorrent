@@ -2,6 +2,7 @@ package libnet
 
 
 import (
+    "errors"
     "testing"
 )
 
@@ -24,8 +25,8 @@ func TestGetScrapeURL(t *testing.T) {
 	}
 
 	scrapeURL, err = GetScrapeURLFromAnnounceURL("http://example.com/a")
-	if err == nil || scrapeURL != ""{
-		t.Errorf(`GetScrapeUrl("http://example.com/a") = %s, %v, want match for %s, nil (scrape not supported)`, scrapeURL, err, scrapeURL)
+	if !errors.Is(err, ErrURLTooShort) || scrapeURL != ""{
+		t.Errorf(`GetScrapeUrl("http://example.com/a") = %s, %v, want ErrURLTooShort`, scrapeURL, err)
 	}
 
 	scrapeURL, err = GetScrapeURLFromAnnounceURL("http://example.com/announce?x2%0644")
@@ -34,11 +35,11 @@ func TestGetScrapeURL(t *testing.T) {
 	}
 
 	scrapeURL, err = GetScrapeURLFromAnnounceURL("http://example.com/announce?x=2/4")
-	if err == nil || scrapeURL != "" {
-		t.Errorf(`GetScrapeUrl("http://example.com/announce?x=2/4") = %s, %v, want match for %s, nil (scrape not supported)`, scrapeURL, err, scrapeURL)
+	if !errors.Is(err, ErrURLTooShort) || scrapeURL != "" {
+		t.Errorf(`GetScrapeUrl("http://example.com/announce?x=2/4") = %s, %v, want ErrURLTooShort`, scrapeURL, err)
 	}
 	scrapeURL, err = GetScrapeURLFromAnnounceURL("http://example.com/x%064announce")
-	if err == nil || scrapeURL != "" {
-		t.Errorf(`GetScrapeUrl("http://example.com/x%%064announce") = %s, %v, want match for %s, nil (scrape not supported)`, scrapeURL, err, scrapeURL)
+	if !errors.Is(err, ErrNoAnnounceInURL) || scrapeURL != "" {
+		t.Errorf(`GetScrapeUrl("http://example.com/x%%064announce") = %s, %v, want ErrNoAnnounceInURL`, scrapeURL, err)
 	}
 }

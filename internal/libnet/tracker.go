@@ -12,29 +12,33 @@ import (
 	"time"
 )
 
+// Custom error types for tracker operations
+var (
+	ErrNoSlashInURL       = errors.New("scrape request not supported by tracker: no slash in URL")
+	ErrURLTooShort        = errors.New("scrape request not supported by tracker: URL too short")
+	ErrNoAnnounceInURL    = errors.New("scrape request not supported by tracker: 'announce' not found in URL")
+)
+
 // https://wiki.theory.org/BitTorrentSpecification#Tracker_.27scrape.27_Convention
 func GetScrapeURLFromAnnounceURL(announceURL string) (string, error) {
 
 	lastSlash := strings.LastIndexByte(announceURL, '/')
 	if lastSlash == -1 {
-		return "", errors.New("scrape request not supported by tracker")
+		return "", ErrNoSlashInURL
 	}
 
 
 	// 8 is the length of the word 'announce' which we will check for
 	if lastSlash + 8 >= len(announceURL) {
-		return "", errors.New("scrape request not supported by tracker")
+		return "", ErrURLTooShort
 	}
 
-
-	fmt.Println(announceURL[lastSlash:lastSlash+9])
-
+	// If scrape is supported, the slash is always followed by 'announce'
 	if announceURL[lastSlash:lastSlash+9] != "/announce"{
-		return "", errors.New("scrape request not supported by tracker")
+		return "", ErrNoAnnounceInURL
 	}
 
 	scrapeURL := announceURL[:lastSlash] + strings.Replace(announceURL[lastSlash:], "announce", "scrape", -1)
-	fmt.Println(scrapeURL)
 
 	return scrapeURL, nil
 
