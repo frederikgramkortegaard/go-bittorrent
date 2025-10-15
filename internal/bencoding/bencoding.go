@@ -71,28 +71,7 @@ func ParseInteger(data string) (int64, string, error) {
 	return i, data[eIndex+1:], nil
 }
 
-type BenType string
-
-const (
-	BenString  BenType = "BenString"
-	BenInteger BenType = "BenInteger"
-	BenList    BenType = "BenList"
-	BenDict    BenType = "BenDict"
-)
-
-// BencodedObject is a dynamic type container, which allows us to have e.g. lists or dictionaries
-// with values of alternating types. @NOTE : We could instead of this, use the interface approach
-// and reduce the allocations (from the heap-pointers) but since most .torrent files are relatively
-// small the self-documentation, compile-time type-checking, and very clear definition of this
-// approach is what we're going to prefer
-type BencodedObject struct {
-	Typ    BenType
-	IntVal *int64
-	StrVal *string
-	List   []BencodedObject
-	Dict   map[string]BencodedObject
-}
-
+// ParseBencodedObject parses any bencoded value (string, integer, list, or dict) from the input data.
 func ParseBencodedObject(data string) (BencodedObject, string, error) {
 	if len(data) == 0 {
 		return BencodedObject{}, "", errors.New("empty data")
@@ -266,4 +245,5 @@ func ExtractInfoDictBytes(data string) ([]byte, error) {
 	}
 
 	return nil, errors.New("info key not found")
+
 }

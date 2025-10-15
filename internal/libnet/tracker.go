@@ -1,12 +1,11 @@
 package libnet
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"gotorrent/internal/bencoding"
 	"io"
-	"net"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -51,85 +50,59 @@ func SendTrackerScrapeRequest(trackerAddress string, infoHashes []string) (map[s
 	scrapeURL, err := GetScrapeURLFromAnnounceURL(trackerAddress)
 	if err != nil {
 		fmt.Println(err)
+		return nil, err
 	}
 
-	params := ""
-	if len(infoHashes) != 0 {
-		for _, hash := range infoHashes {
-			params += fmt.Sprintf("info_hash=%s&", HexEncode(hash))
-		}
-		params = params[:len(params)-1]
-	}
-
-	fmt.Println(scrapeURL)
-
+	// Build URL with query parameters
 	u, err := url.Parse(scrapeURL)
 	if err != nil {
 		fmt.Println("URL parse error:", err)
 		return nil, err
 	}
 
-	// Extract host:port for TCP connection
-	host := u.Host
-	if u.Port() == "" {
-		// Default HTTP port if not specified
-		host = u.Hostname() + ":80"
+	// Add info_hash parameters
+	q := u.Query()
+	for _, hash := range infoHashes {
+		q.Add("info_hash", hash) // Will be URL-encoded automatically
+	}
+	u.RawQuery = q.Encode()
+
+	// Create HTTP client with timeout
+	client := &http.Client{
+		Timeout: 30 * time.Second,
 	}
 
-	// Construct HTTP GET request with path from URL
-	path := u.Path
-	if path == "" {
-		path = "/"
-	}
-	request := fmt.Sprintf("GET %s?%s HTTP/1.1\r\n", path, params) +
-		fmt.Sprintf("Host: %s\r\n", u.Hostname()) +
-		"User-Agent: MyTorrentClient/0.1\r\n" +
-		"Connection: close\r\n" +
-		"\r\n"
-
-		fmt.Println(request)
-	// Open TCP connection to tracker
-	d := net.Dialer{Timeout: 30 * time.Second}
-	conn, err := d.Dial("tcp", host)
+	// Create and send request
+	req, err := http.NewRequest("GET", u.String(), nil)
 	if err != nil {
-		fmt.Println("Connection error:", err)
+		fmt.Println("Error creating request:", err)
 		return nil, err
 	}
-	defer conn.Close()
+	req.Header.Set("User-Agent", "MyTorrentClient/0.1")
 
-	// Send the raw HTTP GET request
-	_, err = conn.Write([]byte(request))
+	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Println("Write error:", err)
+		fmt.Println("Error sending request:", err)
 		return nil, err
 	}
+	defer resp.Body.Close()
 
-	fmt.Println("----")
-	// Read and print the response
-	reader := bufio.NewReader(conn)
-
-	// Read headers
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			break
-		}
-		fmt.Print(line)
-		// Empty line marks end of headers
-		if line == "\r\n" || line == "\n" {
-			break
+	// Print response status and headers
+	fmt.Printf("%s %s\n", resp.Proto, resp.Status)
+	for key, values := range resp.Header {
+		for _, value := range values {
+			fmt.Printf("%s: %s\n", key, value)
 		}
 	}
+	fmt.Println()
 
-	// Read body
-	fmt.Println("Body:")
-	buf := new(strings.Builder)
-	_, err = io.Copy(buf, reader)
+	// Read body (automatically handles chunked encoding, compression, etc.)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 
-	data, _, err := bencoding.ParseDict(buf.String())
+	data, _, err := bencoding.ParseDict(string(body))
 	if err != nil {
 		return nil, err
 	}
@@ -221,73 +194,80 @@ func SendTrackerRequest(c *Client, torrent bencoding.TorrentFile, params SendTra
 	params.InfoHash = string(torrent.InfoHash[:])
 
 	// Parse the tracker URL
-	fmt.Println(params.FormatQuery())
 	u, err := url.Parse(params.TrackerAddress)
 	if err != nil {
 		fmt.Println("URL parse error:", err)
 		return nil, err
 	}
 
-	// Extract host:port for TCP connection
-	host := u.Host
-	if u.Port() == "" {
-		// Default HTTP port if not specified
-		host = u.Hostname() + ":80"
+	// Build query parameters
+	q := u.Query()
+	q.Set("info_hash", params.InfoHash)
+	q.Set("peer_id", params.PeerID)
+	q.Set("port", fmt.Sprintf("%d", params.Port))
+	q.Set("uploaded", fmt.Sprintf("%d", params.Uploaded))
+	q.Set("downloaded", fmt.Sprintf("%d", params.Downloaded))
+	q.Set("left", fmt.Sprintf("%d", params.Left))
+	q.Set("compact", fmt.Sprintf("%d", map[bool]int{false: 0, true: 1}[params.Compact]))
+
+	// Optional fields
+	if params.Event != "" {
+		q.Set("event", params.Event)
+	}
+	if params.IP != "" {
+		q.Set("ip", params.IP)
+	}
+	if params.Numwant != 0 {
+		q.Set("numwant", fmt.Sprintf("%d", params.Numwant))
+	}
+	if params.Key != "" {
+		q.Set("key", params.Key)
+	}
+	if params.TrackerID != "" {
+		q.Set("trackerid", params.TrackerID)
 	}
 
-	// Construct HTTP GET request with path from URL
-	path := u.Path
-	if path == "" {
-		path = "/"
-	}
-	request := fmt.Sprintf("GET %s?%s HTTP/1.1\r\n", path, params.FormatQuery()) +
-		fmt.Sprintf("Host: %s\r\n", u.Hostname()) +
-		"User-Agent: MyTorrentClient/0.1\r\n" +
-		"Connection: close\r\n" +
-		"\r\n"
+	u.RawQuery = q.Encode()
+	fmt.Println(u.RawQuery)
 
-	// Open TCP connection to tracker
-	d := net.Dialer{Timeout: 30 * time.Second}
-	conn, err := d.Dial("tcp", host)
+	// Create HTTP client with timeout
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	// Create and send request
+	req, err := http.NewRequest("GET", u.String(), nil)
 	if err != nil {
-		fmt.Println("Connection error:", err)
+		fmt.Println("Error creating request:", err)
 		return nil, err
 	}
-	defer conn.Close()
-
-	// Send the raw HTTP GET request
-	_, err = conn.Write([]byte(request))
-	if err != nil {
-		fmt.Println("Write error:", err)
-		return nil, err
-	}
+	req.Header.Set("User-Agent", "MyTorrentClient/0.1")
 
 	fmt.Println("----")
-	// Read and print the response
-	reader := bufio.NewReader(conn)
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Println("Error sending request:", err)
+		return nil, err
+	}
+	defer resp.Body.Close()
 
-	// Read headers
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			break
-		}
-		fmt.Print(line)
-		// Empty line marks end of headers
-		if line == "\r\n" || line == "\n" {
-			break
+	// Print response status and headers
+	fmt.Printf("%s %s\n", resp.Proto, resp.Status)
+	for key, values := range resp.Header {
+		for _, value := range values {
+			fmt.Printf("%s: %s\n", key, value)
 		}
 	}
+	fmt.Println()
 
-	// Read body
+	// Read body (automatically handles chunked encoding, compression, etc.)
 	fmt.Println("Body:")
-	buf := new(strings.Builder)
-	_, err = io.Copy(buf, reader)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 
-	data, _, err := bencoding.ParseDict(buf.String())
+	data, _, err := bencoding.ParseDict(string(body))
 	if err != nil {
 		return nil, err
 	}

@@ -3,12 +3,13 @@ package main
 import (
 	"fmt"
 	"gotorrent/internal/bencoding"
+	"gotorrent/internal/daemon"
 	"gotorrent/internal/libnet"
-	"log"
 	"os"
 )
 
 func main() {
+
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: gotorrent <file.torrent>")
 		os.Exit(1)
@@ -29,27 +30,29 @@ func main() {
 
 	fmt.Printf("File Mode: %s\n\n", torrent.TFileMode)
 	bencoding.PrintDict(torrent.Data, 0)
+	os.Exit(1)
 
-	// Setup a Client
-	client := libnet.NewClient()
-	response, err := libnet.SendTrackerRequest(client, torrent, libnet.SendTrackerRequestParams{
-		TrackerAddress: *torrent.Data["announce"].StrVal,
-		PeerID:         client.ID,
-		Event:          "started",
-		Port:           6881,
-		Uploaded:       0,
-		Downloaded:     0,
-		Left:           100, // TODO: calculate from torrent
-		Compact:        false,
-	})
+	// == Start of what will really happen
+
+	// Create ONE client for the entire application
+	client, err := libnet.NewClient()
 	if err != nil {
-		log.Fatal(err)
+		fmt.Println("Error creating client:", err)
+		os.Exit(1)
 	}
+	defer client.Listener.Close()
 
-	_ = response
-//bencoding.PrintDict(response, 0)
+	// Create the torrent manager with the shared client
+	torrentManager := daemon.NewTorrentManager(client)
 
-	fmt.Println("\n\n\n\n\n-----LLL--")
-	dat, err := libnet.SendTrackerScrapeRequest("http://p4p.arenabg.com:1337/announce", []string{string(torrent.InfoHash[:])})
-	bencoding.PrintDict(dat, 0)
+	// Start downloading this torrent
+	session, err := torrentManager.StartTorrentSession(torrent)
+	if err != nil {
+		fmt.Println("Error starting torrent session:", err)
+		os.Exit(1)
+	}
+	_ = session
+
+	fmt.Printf("\nStarted session for torrent. Active sessions: %d\n", len(torrentManager.Sessions))
+
 }

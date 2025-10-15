@@ -7,21 +7,8 @@ import (
 	"errors"
 )
 
-type FileMode string
-
-const (
-	SingleFileMode FileMode = "SingleFileMode"
-	MultiFileMode  FileMode = "MultiFileMode"
-)
-
-type TorrentFile struct {
-	Data      map[string]BencodedObject
-	TFileMode FileMode
-	InfoBytes []byte   // Raw bencoded bytes of the info dict
-	InfoHash  [20]byte // SHA1 hash of InfoBytes
-}
-
-// ValidateTorrentFile ensures that all require fields exists in a given TorrentFile @TODO : Maybe make a validator, e.g. that each piece has a sha etc.
+// ValidateTorrentFile ensures that all required fields exist in a given TorrentFile.
+// TODO: Maybe make a validator, e.g. that each piece has a sha etc.
 func ValidateTorrentFile(tf *TorrentFile) error {
 	return nil
 }
