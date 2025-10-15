@@ -38,4 +38,26 @@ type PeerConnection struct {
 }
 
 // BlockRequest represents a pending request for a block of data.
-type BlockRequest struct{}
+type BlockRequest struct {
+	PieceIndex  int
+	BlockIndex  int
+	Begin       int64 // Offset within piece in bytes
+	Length      int64 // Block length in bytes
+	RequestedAt time.Time
+}
+
+// HasPiece checks if the peer has a specific piece based on their bitfield.
+func (pc *PeerConnection) HasPiece(pieceIndex int) bool {
+	if pc.Bitfield == nil {
+		return false
+	}
+
+	byteIndex := pieceIndex / 8
+	bitOffset := pieceIndex % 8
+
+	if byteIndex >= len(pc.Bitfield) {
+		return false
+	}
+
+	return (pc.Bitfield[byteIndex]>>(7-bitOffset))&1 == 1
+}

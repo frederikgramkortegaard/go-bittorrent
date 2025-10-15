@@ -168,6 +168,7 @@ func NewTorrentSession(torrentFile bencoding.TorrentFile) (*TorrentSession, erro
 			pieceInfo.PieceLength,
 			pieceInfo.LastPieceLength,
 			pieceInfo.Hashes,
+			16384, // 16KB block size
 		),
 	}, nil
 }

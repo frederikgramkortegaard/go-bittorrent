@@ -30,7 +30,6 @@ func main() {
 
 	fmt.Printf("File Mode: %s\n\n", torrent.TFileMode)
 	bencoding.PrintDict(torrent.Data, 0)
-	os.Exit(1)
 
 	// == Start of what will really happen
 

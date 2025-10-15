@@ -22,26 +22,37 @@ type PieceManager struct {
 	PieceLength     int64 // Default piece length
 	LastPieceLength int64 // Last piece may be smaller
 	Hashes          [][20]byte // SHA1 hash for each piece
+	BlockSize       int64 // Standard block size (16KB)
+	MaxBlocksPerPiece int // Maximum blocks in a piece (for blockID encoding)
 
 	// Single source of truth: contains all pieces (in progress + complete)
 	// Piece doesn't exist = not started
 	// Piece exists with incomplete blocks = in progress
 	// Piece exists with all blocks + verified = complete
 	Pieces map[int]*Piece
+
+	// Global pending tracking: blocks currently being requested from ANY peer
+	// Key is encoded as: pieceIndex * MaxBlocksPerPiece + blockIndex
+	PendingBlocks map[int]struct{}
 }
 
 // NewPieceManager creates a new PieceManager with piece information.
-func NewPieceManager(totalPieces int, pieceLength, lastPieceLength int64, hashes [][20]byte) *PieceManager {
+func NewPieceManager(totalPieces int, pieceLength, lastPieceLength int64, hashes [][20]byte, blockSize int64) *PieceManager {
+	maxBlocksPerPiece := int((pieceLength + blockSize - 1) / blockSize)
+
 	return &PieceManager{
-		TotalPieces:     totalPieces,
-		PieceLength:     pieceLength,
-		LastPieceLength: lastPieceLength,
-		Hashes:          hashes,
-		Pieces:          make(map[int]*Piece),
+		TotalPieces:       totalPieces,
+		PieceLength:       pieceLength,
+		LastPieceLength:   lastPieceLength,
+		Hashes:            hashes,
+		BlockSize:         blockSize,
+		MaxBlocksPerPiece: maxBlocksPerPiece,
+		Pieces:            make(map[int]*Piece),
+		PendingBlocks:     make(map[int]struct{}),
 	}
 }
 
-// AddBlock adds a block to a piece. Creates the piece if it doesn't exist yet.
+// AddBlock adds a block to a piece and removes it from pending.
 // Returns true if the piece is now complete.
 func (pm *PieceManager) AddBlock(pieceIndex, blockIndex int, data []byte) bool {
 	pm.mu.Lock()
@@ -54,6 +65,10 @@ func (pm *PieceManager) AddBlock(pieceIndex, blockIndex int, data []byte) bool {
 
 	piece := pm.Pieces[pieceIndex]
 	piece.Blocks[blockIndex] = data
+
+	// Remove from pending blocks
+	blockID := pieceIndex*pm.MaxBlocksPerPiece + blockIndex
+	delete(pm.PendingBlocks, blockID)
 
 	// Check if piece is now complete
 	if len(piece.Blocks) == piece.TotalBlocks {
@@ -139,27 +154,6 @@ func (pm *PieceManager) IsPieceInProgress(pieceIndex int) bool {
 	return piece != nil && !piece.Complete
 }
 
-// GetNextBlockToRequest returns the next block index that needs to be requested
-// for a given piece. Returns -1 if all blocks are downloaded or piece doesn't exist.
-func (pm *PieceManager) GetNextBlockToRequest(pieceIndex int) int {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
-
-	piece := pm.Pieces[pieceIndex]
-	if piece == nil || piece.Complete {
-		return -1
-	}
-
-	// Find first missing block
-	for i := 0; i < piece.TotalBlocks; i++ {
-		if _, exists := piece.Blocks[i]; !exists {
-			return i
-		}
-	}
-
-	return -1
-}
-
 // GetPieceData assembles and returns the complete piece data.
 // Only call this after verifying the piece!
 func (pm *PieceManager) GetPieceData(pieceIndex int) []byte {
@@ -178,4 +172,18 @@ func (pm *PieceManager) GetPieceData(pieceIndex int) []byte {
 	}
 
 	return data
+}
+
+// HasBlock checks if we have received a specific block.
+func (pm *PieceManager) HasBlock(pieceIndex, blockIndex int) bool {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	piece := pm.Pieces[pieceIndex]
+	if piece == nil {
+		return false
+	}
+
+	_, exists := piece.Blocks[blockIndex]
+	return exists
 }
