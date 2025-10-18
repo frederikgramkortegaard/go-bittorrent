@@ -44,9 +44,11 @@ func GetNextBlockToRequest(pm *PieceManager, pieceIndex int) (blockIndex int, be
 
 	// Find first block that we don't have AND is not pending
 	for blockIdx := 0; blockIdx < int(piece.TotalBlocks); blockIdx++ {
-		// Already have this block?
-		if _, exists := piece.Blocks[blockIdx]; exists {
-			continue
+		// Already have this block? (only check if Blocks map exists - it's cleared after disk write)
+		if piece.Blocks != nil {
+			if _, exists := piece.Blocks[blockIdx]; exists {
+				continue
+			}
 		}
 
 		// Is it pending (being requested by someone)?

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"gotorrent/internal"
 	"gotorrent/internal/bencoding"
@@ -15,15 +16,27 @@ type WriteRequest struct {
 	Data       []byte
 }
 
+// FileEntry represents a file in the torrent with its metadata and write state.
+type FileEntry struct {
+	Path           string // Full path including outputDir and base directory
+	TotalLength    int    // Total bytes in this file
+	BytesWritten   int    // How many bytes written so far
+	BytesRemaining int    // How many bytes left to write
+}
+
 // DiskManager handles persistent storage of torrent data.
 // It's responsible for writing downloaded pieces to disk and reading pieces for seeding.
 type DiskManager struct {
 	torrentFile bencoding.TorrentFile
 	outputDir   string
 
+	// File structure extracted from torrent metadata
+	files []*FileEntry
+
 	// Write queue for async I/O
 	writeQueue chan WriteRequest
 	done       chan struct{} // Signal to stop write worker
+	wg         sync.WaitGroup // Track pending writes
 }
 
 // NewDiskManager creates a new DiskManager for a torrent and starts the write worker.
@@ -35,97 +48,50 @@ func NewDiskManager(torrentFile bencoding.TorrentFile, outputDir string) *DiskMa
 		done:        make(chan struct{}),
 	}
 
+	// Extract file structure from torrent metadata
+	dm.files = dm.extractFileStructure()
+
 	// Start write worker goroutine
 	go dm.writeWorker()
 
 	return dm
 }
 
-// writeWorker processes write requests from the queue asynchronously.
-func (dm *DiskManager) writeWorker() {
-	for {
-		select {
-		case <-dm.done:
-			// Drain any remaining writes before exiting
-			for len(dm.writeQueue) > 0 {
-				req := <-dm.writeQueue
-				dm.WritePiece(req.PieceIndex, req.Data)
-			}
-			return
-
-		case req := <-dm.writeQueue:
-			// @TODO: Actually write the piece to disk
-			_ = dm.WritePiece(req.PieceIndex, req.Data)
-		}
-	}
-}
-
-// QueueWrite queues a piece to be written to disk asynchronously.
-func (dm *DiskManager) QueueWrite(pieceIndex int, data []byte) {
-	dm.writeQueue <- WriteRequest{
-		PieceIndex: pieceIndex,
-		Data:       data,
-	}
-}
-
-// WritePiece writes a complete verified piece to disk.
-// For multi-file torrents, this may span multiple files.
-func (dm *DiskManager) WritePiece(index int, data []byte) error {
-	// @TODO: Implement disk write logic
-	// - Calculate file offset(s) for this piece
-	// - Handle single-file vs multi-file mode
-	// - Write data to appropriate file(s)
-	// - Handle partial writes across file boundaries
-	return nil
-}
-
-// ReadPiece reads a piece from disk (for seeding).
-func (dm *DiskManager) ReadPiece(index int) ([]byte, error) {
-	// @TODO: Implement disk read logic
-	// - Calculate file offset(s) for this piece
-	// - Read data from appropriate file(s)
-	// - Handle partial reads across file boundaries
-	return nil, nil
-}
-
-// WriteToDisk writes all pieces to disk at once.
-// This is a simple implementation for initial testing.
-func (dm *DiskManager) WriteToDisk(pm *internal.PieceManager) error {
-	// Assemble all pieces in order
-	var allData []byte
-	for i := 0; i < pm.TotalPieces; i++ {
-		data := pm.GetPieceData(i)
-		if data == nil {
-			return fmt.Errorf("missing piece %d", i)
-		}
-		allData = append(allData, data...)
-	}
-
-	// Get filename from info dict
+// extractFileStructure builds the file list from torrent metadata.
+func (dm *DiskManager) extractFileStructure() []*FileEntry {
 	infoDict := dm.torrentFile.Data["info"].Dict
+	var files []*FileEntry
 
-	// Check for "files" field (multi-file mode or single-file with path)
+	// Check for "files" field (multi-file mode)
 	filesObj, ok := infoDict["files"]
 	if !ok || filesObj.List == nil || len(filesObj.List) == 0 {
-		// Single-file mode fallback - use "name" field
+		// Single-file mode - use "name" field
 		nameObj, ok := infoDict["name"]
 		if !ok || nameObj.StrVal == nil {
-			return fmt.Errorf("name not found in torrent info")
+			return files // Empty list on error
 		}
-		filename := *nameObj.StrVal
-		outputPath := filepath.Join(dm.outputDir, filename)
 
-		// Write file
-		fmt.Printf("Writing file: %s (%d bytes)\n", filename, len(allData))
-		err := os.WriteFile(outputPath, allData, 0644)
-		if err != nil {
-			return fmt.Errorf("failed to write file: %w", err)
+		// Get file length
+		lengthObj, ok := infoDict["length"]
+		if !ok || lengthObj.IntVal == nil {
+			return files
 		}
-		return nil
+		length := int(*lengthObj.IntVal)
+
+		filename := *nameObj.StrVal
+		path := filepath.Join(dm.outputDir, filename)
+
+		files = append(files, &FileEntry{
+			Path:           path,
+			TotalLength:    length,
+			BytesWritten:   0,
+			BytesRemaining: length,
+		})
+
+		return files
 	}
 
-	// Multi-file mode - write files sequentially from allData
-	// Check if there's a "name" field to use as a base directory
+	// Multi-file mode - check for base directory
 	var baseDir string
 	if nameObj, ok := infoDict["name"]; ok && nameObj.StrVal != nil {
 		baseDir = filepath.Join(dm.outputDir, *nameObj.StrVal)
@@ -133,7 +99,7 @@ func (dm *DiskManager) WriteToDisk(pm *internal.PieceManager) error {
 		baseDir = dm.outputDir
 	}
 
-	dataOffset := 0
+	// Extract all files
 	for _, curFile := range filesObj.List {
 		pathObj, ok := curFile.Dict["path"]
 		if !ok || pathObj.List == nil || len(pathObj.List) == 0 {
@@ -146,40 +112,141 @@ func (dm *DiskManager) WriteToDisk(pm *internal.PieceManager) error {
 		path := *pathObj.List[0].StrVal
 		path = filepath.Join(baseDir, path)
 
-		dir, filename := filepath.Split(path)
+		lengthObj, ok := curFile.Dict["length"]
+		if !ok || lengthObj.IntVal == nil {
+			continue
+		}
+		length := int(*lengthObj.IntVal)
 
-		// Create directory if it doesn't exist (dir could be empty for files in root)
+		files = append(files, &FileEntry{
+			Path:           path,
+			TotalLength:    length,
+			BytesWritten:   0,
+			BytesRemaining: length,
+		})
+	}
+
+	return files
+}
+
+// writeWorker processes write requests from the queue asynchronously.
+func (dm *DiskManager) writeWorker() {
+	for {
+		select {
+		case <-dm.done:
+			// Drain any remaining writes before exiting
+			for len(dm.writeQueue) > 0 {
+				req := <-dm.writeQueue
+				dm.WritePiece(req.PieceIndex, req.Data)
+				dm.wg.Done()
+			}
+			return
+
+		case req := <-dm.writeQueue:
+			_ = dm.WritePiece(req.PieceIndex, req.Data)
+			dm.wg.Done()
+		}
+	}
+}
+
+// QueueWrite queues a piece to be written to disk asynchronously.
+func (dm *DiskManager) QueueWrite(pieceIndex int, data []byte) {
+	dm.wg.Add(1)
+	dm.writeQueue <- WriteRequest{
+		PieceIndex: pieceIndex,
+		Data:       data,
+	}
+}
+
+// WritePiece writes a complete verified piece to disk.
+// For multi-file torrents, this may span multiple files.
+// This is called by writeWorker, so it runs on the async worker goroutine.
+func (dm *DiskManager) WritePiece(index int, data []byte) error {
+	dataOffset := 0
+	dataRemaining := len(data)
+
+	for _, file := range dm.files {
+		// Skip files that are already complete
+		if file.BytesRemaining == 0 {
+			continue
+		}
+
+		// How much of this piece belongs to this file?
+		bytesToWrite := dataRemaining
+		if bytesToWrite > file.BytesRemaining {
+			bytesToWrite = file.BytesRemaining
+		}
+
+		if bytesToWrite == 0 {
+			break // No more data to write
+		}
+
+		// Extract the chunk for this file
+		chunk := data[dataOffset : dataOffset+bytesToWrite]
+
+		// Ensure directory exists
+		dir, _ := filepath.Split(file.Path)
 		if dir != "" {
 			if err := os.MkdirAll(dir, os.ModePerm); err != nil {
 				return fmt.Errorf("failed to create directory %s: %w", dir, err)
 			}
 		}
 
-		bytesInFileObj, ok := curFile.Dict["length"]
-		if !ok || bytesInFileObj.IntVal == nil {
-			return fmt.Errorf("undefined how many bytes should be in file: %s", path)
-		}
-		bytesInFile := int(*bytesInFileObj.IntVal)
-
-		// Check if we have enough data left
-		if dataOffset+bytesInFile > len(allData) {
-			return fmt.Errorf("not enough data for file %s: need %d bytes, have %d bytes remaining",
-				filename, bytesInFile, len(allData)-dataOffset)
-		}
-
-		// Extract this file's data from allData
-		fileData := allData[dataOffset : dataOffset+bytesInFile]
-
-		// Write file
-		fmt.Printf("Writing file: %s (%d bytes)\n", path, bytesInFile)
-		err := os.WriteFile(path, fileData, 0644)
+		// Open file in append mode (or create if doesn't exist)
+		f, err := os.OpenFile(file.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
-			return fmt.Errorf("failed to write file: %w", err)
+			return fmt.Errorf("failed to open file %s: %w", file.Path, err)
 		}
 
-		// Advance offset for next file
-		dataOffset += bytesInFile
+		// Write chunk
+		n, err := f.Write(chunk)
+		f.Close()
+		if err != nil {
+			return fmt.Errorf("failed to write to file %s: %w", file.Path, err)
+		}
+
+		// Update file state
+		file.BytesWritten += n
+		file.BytesRemaining -= n
+
+		fmt.Printf("Wrote %d bytes to %s (total: %d/%d)\n",
+			n, file.Path, file.BytesWritten, file.TotalLength)
+
+		// Move to next chunk
+		dataOffset += bytesToWrite
+		dataRemaining -= bytesToWrite
+
+		if dataRemaining == 0 {
+			break
+		}
 	}
+
+	return nil
+}
+
+// ReadPiece reads a piece from disk (for seeding).
+func (dm *DiskManager) ReadPiece(index int) ([]byte, error) {
+	// @TODO: Implement disk read logic
+	// - Calculate file offset(s) for this piece
+	// - Read data from appropriate file(s)
+	// - Handle partial reads across file boundaries
+	return nil, nil
+}
+
+// WriteToDisk writes all pieces to disk at once using the writeQueue.
+// This queues all pieces for writing by the async worker.
+func (dm *DiskManager) WriteToDisk(pm *internal.PieceManager) error {
+	// Queue all pieces for writing
+	for i := 0; i < pm.TotalPieces; i++ {
+		data := pm.GetPieceData(i)
+		if data == nil {
+			return fmt.Errorf("missing piece %d", i)
+		}
+		dm.QueueWrite(i, data)
+	}
+
+	// Wait for all writes to complete
+	dm.wg.Wait()
 
 	return nil
 }

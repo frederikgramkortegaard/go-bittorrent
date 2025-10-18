@@ -296,6 +296,14 @@ func (ts *TorrentSession) PeerReadLoop(ctx context.Context, peer *libnet.PeerCon
 				// Piece is complete, verify it
 				if ts.PieceManager.VerifyPiece(receivedPieceIndex) {
 					fmt.Printf("Piece %d verified successfully!\n", receivedPieceIndex)
+
+					// Queue piece for writing to disk
+					pieceData := ts.PieceManager.GetPieceData(receivedPieceIndex)
+					if pieceData != nil {
+						ts.DiskManager.QueueWrite(receivedPieceIndex, pieceData)
+						// Free memory by clearing the piece data
+						ts.PieceManager.ClearPieceData(receivedPieceIndex)
+					}
 				} else {
 					fmt.Printf("Piece %d FAILED verification, re-downloading\n", receivedPieceIndex)
 					// Mark piece as failed and re-download

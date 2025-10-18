@@ -182,6 +182,21 @@ func (pm *PieceManager) GetPieceData(pieceIndex int) []byte {
 	return data
 }
 
+// ClearPieceData clears the block data from a verified piece to free memory.
+// The piece remains marked as complete, but the blocks map is cleared.
+func (pm *PieceManager) ClearPieceData(pieceIndex int) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	piece := pm.Pieces[pieceIndex]
+	if piece == nil || !piece.Complete {
+		return
+	}
+
+	// Clear the blocks map to free memory
+	piece.Blocks = nil
+}
+
 // HasBlock checks if we have received a specific block.
 func (pm *PieceManager) HasBlock(pieceIndex, blockIndex int) bool {
 	pm.mu.RLock()
