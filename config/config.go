@@ -4,7 +4,7 @@ import "time"
 
 const (
 	// Block size for piece downloads (16KB is standard)
-	BlockSize int64 = 16384
+	BlockSize int32 = 16384
 
 	// Maximum number of pending block requests per peer (pipelining)
 	MaxPipelineDepth int = 5

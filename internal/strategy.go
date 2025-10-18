@@ -33,7 +33,7 @@ func SelectNextPiece(pm *PieceManager, peer *libnet.PeerConnection) (int, bool) 
 // GetNextBlockToRequest finds the next block that needs to be requested for a piece.
 // Returns blockIndex, begin offset, length, and true if found.
 // Returns -1, 0, 0, false if no blocks available.
-func GetNextBlockToRequest(pm *PieceManager, pieceIndex int) (blockIndex int, begin int64, length int64, ok bool) {
+func GetNextBlockToRequest(pm *PieceManager, pieceIndex int) (blockIndex int, begin int32, length int32, ok bool) {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 
@@ -43,7 +43,7 @@ func GetNextBlockToRequest(pm *PieceManager, pieceIndex int) (blockIndex int, be
 	}
 
 	// Find first block that we don't have AND is not pending
-	for blockIdx := 0; blockIdx < piece.TotalBlocks; blockIdx++ {
+	for blockIdx := 0; blockIdx < int(piece.TotalBlocks); blockIdx++ {
 		// Already have this block?
 		if _, exists := piece.Blocks[blockIdx]; exists {
 			continue
@@ -56,7 +56,7 @@ func GetNextBlockToRequest(pm *PieceManager, pieceIndex int) (blockIndex int, be
 		}
 
 		// Calculate offset and length
-		begin = int64(blockIdx) * piece.BlockSize
+		begin = int32(blockIdx) * piece.BlockSize
 		length = piece.BlockSize
 
 		// Last block might be smaller

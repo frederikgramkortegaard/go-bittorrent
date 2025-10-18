@@ -7,10 +7,10 @@ import (
 
 type Piece struct {
 	Index       int
-	Length      int64          // Total piece length in bytes
+	Length      int32          // Total piece length in bytes
 	Hash        [20]byte       // Expected SHA1 from .torrent
-	BlockSize   int64          // Usually 16KB (16384 bytes)
-	TotalBlocks int            // How many blocks in this piece
+	BlockSize   int32          // Usually 16KB (16384 bytes)
+	TotalBlocks int32          // How many blocks in this piece
 	Blocks      map[int][]byte // blockIndex -> block data
 	Complete    bool           // Set to true once all blocks have been downloaded
 }
@@ -18,12 +18,12 @@ type Piece struct {
 type PieceManager struct {
 	mu sync.RWMutex
 
-	TotalPieces     int
-	PieceLength     int64 // Default piece length
-	LastPieceLength int64 // Last piece may be smaller
-	Hashes          [][20]byte // SHA1 hash for each piece
-	BlockSize       int64 // Standard block size (16KB)
-	MaxBlocksPerPiece int // Maximum blocks in a piece (for blockID encoding)
+	TotalPieces       int
+	PieceLength       int32      // Default piece length
+	LastPieceLength   int32      // Last piece may be smaller
+	Hashes            [][20]byte // SHA1 hash for each piece
+	BlockSize         int32      // Standard block size (16KB)
+	MaxBlocksPerPiece int        // Maximum blocks in a piece (for blockID encoding)
 
 	// Single source of truth: contains all pieces (in progress + complete)
 	// Piece doesn't exist = not started
@@ -37,7 +37,7 @@ type PieceManager struct {
 }
 
 // NewPieceManager creates a new PieceManager with piece information.
-func NewPieceManager(totalPieces int, pieceLength, lastPieceLength int64, hashes [][20]byte, blockSize int64) *PieceManager {
+func NewPieceManager(totalPieces int, pieceLength, lastPieceLength int32, hashes [][20]byte, blockSize int32) *PieceManager {
 	maxBlocksPerPiece := int((pieceLength + blockSize - 1) / blockSize)
 
 	return &PieceManager{
@@ -71,7 +71,7 @@ func (pm *PieceManager) AddBlock(pieceIndex, blockIndex int, data []byte) bool {
 	delete(pm.PendingBlocks, blockID)
 
 	// Check if piece is now complete
-	if len(piece.Blocks) == piece.TotalBlocks {
+	if len(piece.Blocks) == int(piece.TotalBlocks) {
 		piece.Complete = true
 		return true
 	}
@@ -81,7 +81,7 @@ func (pm *PieceManager) AddBlock(pieceIndex, blockIndex int, data []byte) bool {
 
 // InitializePiece creates a new piece ready for downloading.
 // Uses the hash stored in the manager and calculates the piece length.
-func (pm *PieceManager) InitializePiece(index int, blockSize int64) {
+func (pm *PieceManager) InitializePiece(index int, blockSize int32) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
@@ -91,14 +91,14 @@ func (pm *PieceManager) InitializePiece(index int, blockSize int64) {
 	}
 
 	// Determine piece length (last piece may be shorter)
-	var pieceLength int64
+	var pieceLength int32
 	if index == pm.TotalPieces-1 {
 		pieceLength = pm.LastPieceLength
 	} else {
 		pieceLength = pm.PieceLength
 	}
 
-	totalBlocks := int((pieceLength + blockSize - 1) / blockSize)
+	totalBlocks := int32((pieceLength + blockSize - 1) / blockSize)
 
 	pm.Pieces[index] = &Piece{
 		Index:       index,
@@ -123,13 +123,21 @@ func (pm *PieceManager) VerifyPiece(pieceIndex int) bool {
 
 	// Assemble all blocks in order
 	data := make([]byte, 0, piece.Length)
-	for i := 0; i < piece.TotalBlocks; i++ {
+	for i := 0; int32(i) < piece.TotalBlocks; i++ {
 		data = append(data, piece.Blocks[i]...)
 	}
 
 	// Calculate SHA1 hash
 	hash := sha1.Sum(data)
 	return hash == piece.Hash
+}
+
+func (pm *PieceManager) RemovePiece(pieceIndex int) {
+	// if the verification of the piece failed, our naive solution is just to remove the entire piece
+	// and re-download it all
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	delete(pm.Pieces, pieceIndex)
 }
 
 // IsPieceComplete checks if all blocks have been downloaded for a piece.
@@ -167,7 +175,7 @@ func (pm *PieceManager) GetPieceData(pieceIndex int) []byte {
 
 	// Assemble all blocks in order
 	data := make([]byte, 0, piece.Length)
-	for i := 0; i < piece.TotalBlocks; i++ {
+	for i := 0; int32(i) < piece.TotalBlocks; i++ {
 		data = append(data, piece.Blocks[i]...)
 	}
 
@@ -186,4 +194,73 @@ func (pm *PieceManager) HasBlock(pieceIndex, blockIndex int) bool {
 
 	_, exists := piece.Blocks[blockIndex]
 	return exists
+}
+
+// MarkBlockPending marks a block as pending (being requested).
+func (pm *PieceManager) MarkBlockPending(pieceIndex, blockIndex int) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	blockID := pieceIndex*pm.MaxBlocksPerPiece + blockIndex
+	pm.PendingBlocks[blockID] = struct{}{}
+}
+
+// UnmarkBlockPending removes a block from pending (e.g., on error).
+func (pm *PieceManager) UnmarkBlockPending(pieceIndex, blockIndex int) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	blockID := pieceIndex*pm.MaxBlocksPerPiece + blockIndex
+	delete(pm.PendingBlocks, blockID)
+}
+
+// TotalSize returns the total size of all pieces in bytes (int64 for large torrents).
+func (pm *PieceManager) TotalSize() int64 {
+	// All regular pieces + last piece
+	return int64(pm.TotalPieces-1)*int64(pm.PieceLength) + int64(pm.LastPieceLength)
+}
+
+// BytesRemaining returns how many bytes are left to download (int64 for large torrents).
+func (pm *PieceManager) BytesRemaining() int64 {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	var downloaded int64
+	for _, piece := range pm.Pieces {
+		if piece.Complete {
+			downloaded += int64(piece.Length)
+		}
+	}
+
+	return pm.TotalSize() - downloaded
+}
+
+// CompletedPieces returns the number of completed pieces.
+func (pm *PieceManager) CompletedPieces() int {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	count := 0
+	for _, piece := range pm.Pieces {
+		if piece.Complete {
+			count++
+		}
+	}
+	return count
+}
+
+// IsComplete returns true if all pieces are downloaded and verified.
+func (pm *PieceManager) IsComplete() bool {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	// Count completed pieces inline to avoid double-locking
+	count := 0
+	for _, piece := range pm.Pieces {
+		if piece.Complete {
+			count++
+		}
+	}
+
+	return len(pm.Pieces) == pm.TotalPieces && count == pm.TotalPieces
 }

@@ -3,6 +3,7 @@ package libnet
 import (
 	"gotorrent/internal/bencoding"
 	"net"
+	"sync/atomic"
 	"time"
 )
 
@@ -15,21 +16,21 @@ type PeerConnection struct {
 	ConnectionAddress string
 	Connection        net.Conn
 
-	// Connection lifecycle
-	Status PeerConnectionStatus
-	Error  error // Error that caused failure (if Status == StatusFailed)
+	// Connection lifecycle (using atomic for lock-free access)
+	Status atomic.Value // PeerConnectionStatus stored atomically
+	Error  error        // Error that caused failure (if Status == StatusFailed)
 
-	// BitTorrent protocol state
-	AmChoking      bool // This client is choking the peer
-	AmInterested   bool // This client is interested in the peer
-	PeerChoking    bool // Peer is choking this client
-	PeerInterested bool // Peer is interested in this client
+	// BitTorrent protocol state (using atomics for lock-free access)
+	AmChoking      bool        // This client is choking the peer
+	AmInterested   bool        // This client is interested in the peer
+	PeerChoking    atomic.Bool // Peer is choking this client (atomic for read-heavy access)
+	PeerInterested atomic.Bool // Peer is interested in this client
 
 	// Piece availability
 	Bitfield []byte // Bitfield of pieces this peer has
 
-	// Data Tracking
-	PendingBlockRequests []*BlockRequest
+	// Request pipelining (buffered channel for up to 5 concurrent requests)
+	RequestChan chan struct{}
 
 	// Statistics
 	LastSeen        time.Time
@@ -41,9 +42,23 @@ type PeerConnection struct {
 type BlockRequest struct {
 	PieceIndex  int
 	BlockIndex  int
-	Begin       int64 // Offset within piece in bytes
-	Length      int64 // Block length in bytes
+	Begin       int32 // Offset within piece in bytes
+	Length      int32 // Block length in bytes
 	RequestedAt time.Time
+}
+
+// GetStatus returns the current peer connection status.
+func (pc *PeerConnection) GetStatus() PeerConnectionStatus {
+	v := pc.Status.Load()
+	if v == nil {
+		return StatusDiscovered // Default value
+	}
+	return v.(PeerConnectionStatus)
+}
+
+// SetStatus sets the peer connection status.
+func (pc *PeerConnection) SetStatus(status PeerConnectionStatus) {
+	pc.Status.Store(status)
 }
 
 // HasPiece checks if the peer has a specific piece based on their bitfield.

@@ -108,3 +108,17 @@ func ReadMessage(conn io.Reader) (*Message, error) {
 
 	return &Message{ID: &msgID, Payload: payload}, nil
 }
+
+// SendMessage serializes and sends a message to the connection.
+func SendMessage(conn io.Writer, msg *Message) error {
+	data, err := msg.Serialize()
+	if err != nil {
+		return fmt.Errorf("failed to serialize message: %w", err)
+	}
+
+	if _, err := conn.Write(data); err != nil {
+		return fmt.Errorf("failed to write message: %w", err)
+	}
+
+	return nil
+}

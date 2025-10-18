@@ -95,10 +95,10 @@ func ExtractPeersFromTrackerResponse(data map[string]BencodedObject) ([]PeerStru
 
 // PieceInfo contains information about pieces from the torrent file.
 type PieceInfo struct {
-	PieceLength     int64      // Length of each piece in bytes
+	PieceLength     int32      // Length of each piece in bytes
 	TotalPieces     int        // Total number of pieces
 	Hashes          [][20]byte // SHA1 hash for each piece
-	LastPieceLength int64      // Length of the last piece (may be smaller)
+	LastPieceLength int32      // Length of the last piece (may be smaller)
 }
 
 // ExtractPieceInfo extracts piece information from a torrent file.
@@ -111,7 +111,7 @@ func ExtractPieceInfo(torrent TorrentFile) (PieceInfo, error) {
 	if !ok || pieceLength.IntVal == nil {
 		return info, errors.New("piece length not found in torrent file")
 	}
-	info.PieceLength = int64(*pieceLength.IntVal)
+	info.PieceLength = int32(*pieceLength.IntVal)
 
 	// Get pieces (concatenated SHA1 hashes)
 	piecesObj, ok := torrent.Data["info"].Dict["pieces"]
@@ -160,9 +160,11 @@ func ExtractPieceInfo(torrent TorrentFile) (PieceInfo, error) {
 	}
 
 	// Last piece length = remaining bytes
-	info.LastPieceLength = totalLength - int64(info.TotalPieces-1)*info.PieceLength
-	if info.LastPieceLength <= 0 || info.LastPieceLength > info.PieceLength {
+	lastPieceLen := totalLength - int64(info.TotalPieces-1)*int64(info.PieceLength)
+	if lastPieceLen <= 0 || lastPieceLen > int64(info.PieceLength) {
 		info.LastPieceLength = info.PieceLength // Shouldn't happen, but safe default
+	} else {
+		info.LastPieceLength = int32(lastPieceLen)
 	}
 
 	return info, nil
