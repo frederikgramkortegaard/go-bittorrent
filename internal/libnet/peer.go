@@ -1,7 +1,9 @@
 package libnet
 
 import (
+	"fmt"
 	"gotorrent/internal/bencoding"
+	"gotorrent/internal/logger"
 	"net"
 	"sync/atomic"
 	"time"
@@ -36,6 +38,14 @@ type PeerConnection struct {
 	LastSeen        time.Time
 	BytesUploaded   uint64
 	BytesDownloaded uint64
+
+	// Logger
+	Logger *logger.Logger
+}
+
+// String implements fmt.Stringer for PeerConnection
+func (pc *PeerConnection) String() string {
+	return fmt.Sprintf("Peer:%s", pc.ConnectionAddress)
 }
 
 // BlockRequest represents a pending request for a block of data.

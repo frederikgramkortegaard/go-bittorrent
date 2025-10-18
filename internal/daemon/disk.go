@@ -2,12 +2,12 @@ package daemon
 
 import (
 	"fmt"
+	"gotorrent/internal"
+	"gotorrent/internal/bencoding"
+	"gotorrent/internal/config"
 	"os"
 	"path/filepath"
 	"sync"
-
-	"gotorrent/internal"
-	"gotorrent/internal/bencoding"
 )
 
 // WriteRequest represents a request to write a piece to disk.
@@ -40,11 +40,11 @@ type DiskManager struct {
 }
 
 // NewDiskManager creates a new DiskManager for a torrent and starts the write worker.
-func NewDiskManager(torrentFile bencoding.TorrentFile, outputDir string) *DiskManager {
+func NewDiskManager(torrentFile bencoding.TorrentFile, outputDir string, cfg *config.Config) *DiskManager {
 	dm := &DiskManager{
 		torrentFile: torrentFile,
 		outputDir:   outputDir,
-		writeQueue:  make(chan WriteRequest, 100), // Buffer 100 write requests
+		writeQueue:  make(chan WriteRequest, cfg.DiskWriteQueueSize),
 		done:        make(chan struct{}),
 	}
 
@@ -253,14 +253,17 @@ func (dm *DiskManager) WriteToDisk(pm *internal.PieceManager) error {
 
 // Flush ensures all pending writes are completed.
 func (dm *DiskManager) Flush() error {
-	// @TODO: If using async write queue, wait for all writes to complete
+	// Wait for all pending writes to complete
+	dm.wg.Wait()
 	return nil
 }
 
 // Close closes the DiskManager and releases resources.
 func (dm *DiskManager) Close() error {
+	// Signal write worker to stop
 	close(dm.done)
-	// @TODO: Close file handles, etc.
+	// Wait for any remaining writes to drain
+	dm.wg.Wait()
 	return nil
 }
 

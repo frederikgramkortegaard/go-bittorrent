@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 )
 
 // Custom error types for tracker operations
@@ -44,20 +43,19 @@ func GetScrapeURLFromAnnounceURL(announceURL string) (string, error) {
 }
 
 // SendTrackerScrapeRequest sends a scrape request to the tracker to get statistics about torrents.
-func SendTrackerScrapeRequest(trackerAddress string, infoHashes []string) (map[string]bencoding.BencodedObject, error) {
+func (c *Client) SendTrackerScrapeRequest(trackerAddress string, infoHashes []string) (map[string]bencoding.BencodedObject, error) {
+	c.Logger.Debug("Sending scrape request to %s", trackerAddress)
 
 	// Get the scrape URL from the Tracker if it's possible
 	scrapeURL, err := GetScrapeURLFromAnnounceURL(trackerAddress)
 	if err != nil {
-		fmt.Println(err)
 		return nil, err
 	}
 
 	// Build URL with query parameters
 	u, err := url.Parse(scrapeURL)
 	if err != nil {
-		fmt.Println("URL parse error:", err)
-		return nil, err
+		return nil, fmt.Errorf("URL parse error: %w", err)
 	}
 
 	// Add info_hash parameters
@@ -69,32 +67,23 @@ func SendTrackerScrapeRequest(trackerAddress string, infoHashes []string) (map[s
 
 	// Create HTTP client with timeout
 	client := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: c.Config.TrackerTimeout,
 	}
 
 	// Create and send request
 	req, err := http.NewRequest("GET", u.String(), nil)
 	if err != nil {
-		fmt.Println("Error creating request:", err)
-		return nil, err
+		return nil, fmt.Errorf("error creating request: %w", err)
 	}
-	req.Header.Set("User-Agent", "MyTorrentClient/0.1")
+	req.Header.Set("User-Agent", c.Config.UserAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Println("Error sending request:", err)
-		return nil, err
+		return nil, fmt.Errorf("error sending request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Print response status and headers
-	fmt.Printf("%s %s\n", resp.Proto, resp.Status)
-	for key, values := range resp.Header {
-		for _, value := range values {
-			fmt.Printf("%s: %s\n", key, value)
-		}
-	}
-	fmt.Println()
+	c.Logger.Debug("Scrape response: %s %s", resp.Proto, resp.Status)
 
 	// Read body (automatically handles chunked encoding, compression, etc.)
 	body, err := io.ReadAll(resp.Body)
@@ -189,15 +178,16 @@ func (s *SendTrackerRequestParams) FormatQuery() string {
 }
 
 // SendTrackerRequest sends a regular announce request to the tracker.
-func SendTrackerRequest(c *Client, torrent bencoding.TorrentFile, params SendTrackerRequestParams) (map[string]bencoding.BencodedObject, error) {
+func (c *Client) SendTrackerRequest(torrent bencoding.TorrentFile, params SendTrackerRequestParams) (map[string]bencoding.BencodedObject, error) {
 	// Use info hash from torrent file as raw binary string
 	params.InfoHash = string(torrent.InfoHash[:])
+
+	c.Logger.Debug("Sending tracker request to %s", params.TrackerAddress)
 
 	// Parse the tracker URL
 	u, err := url.Parse(params.TrackerAddress)
 	if err != nil {
-		fmt.Println("URL parse error:", err)
-		return nil, err
+		return nil, fmt.Errorf("URL parse error: %w", err)
 	}
 
 	// Build query parameters
@@ -228,40 +218,29 @@ func SendTrackerRequest(c *Client, torrent bencoding.TorrentFile, params SendTra
 	}
 
 	u.RawQuery = q.Encode()
-	fmt.Println(u.RawQuery)
+	c.Logger.Debug("Query string: %s", u.RawQuery)
 
 	// Create HTTP client with timeout
 	client := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: c.Config.TrackerTimeout,
 	}
 
 	// Create and send request
 	req, err := http.NewRequest("GET", u.String(), nil)
 	if err != nil {
-		fmt.Println("Error creating request:", err)
-		return nil, err
+		return nil, fmt.Errorf("error creating request: %w", err)
 	}
-	req.Header.Set("User-Agent", "MyTorrentClient/0.1")
+	req.Header.Set("User-Agent", c.Config.UserAgent)
 
-	fmt.Println("----")
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Println("Error sending request:", err)
-		return nil, err
+		return nil, fmt.Errorf("error sending request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Print response status and headers
-	fmt.Printf("%s %s\n", resp.Proto, resp.Status)
-	for key, values := range resp.Header {
-		for _, value := range values {
-			fmt.Printf("%s: %s\n", key, value)
-		}
-	}
-	fmt.Println()
+	c.Logger.Debug("Tracker response: %s %s", resp.Proto, resp.Status)
 
 	// Read body (automatically handles chunked encoding, compression, etc.)
-	fmt.Println("Body:")
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
