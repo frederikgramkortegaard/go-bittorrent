@@ -102,20 +102,83 @@ func (dm *DiskManager) WriteToDisk(pm *internal.PieceManager) error {
 	}
 
 	// Get filename from info dict
-	nameObj, ok := dm.torrentFile.Data["info"].Dict["name"]
-	if !ok || nameObj.StrVal == nil {
-		return fmt.Errorf("name not found in torrent info")
+	infoDict := dm.torrentFile.Data["info"].Dict
+
+	// Check for "files" field (multi-file mode or single-file with path)
+	filesObj, ok := infoDict["files"]
+	if !ok || filesObj.List == nil || len(filesObj.List) == 0 {
+		// Single-file mode fallback - use "name" field
+		nameObj, ok := infoDict["name"]
+		if !ok || nameObj.StrVal == nil {
+			return fmt.Errorf("name not found in torrent info")
+		}
+		filename := *nameObj.StrVal
+		outputPath := filepath.Join(dm.outputDir, filename)
+
+		// Write file
+		fmt.Printf("Writing file: %s (%d bytes)\n", filename, len(allData))
+		err := os.WriteFile(outputPath, allData, 0644)
+		if err != nil {
+			return fmt.Errorf("failed to write file: %w", err)
+		}
+		return nil
 	}
-	filename := *nameObj.StrVal
 
-	// Create output path
-	outputPath := filepath.Join(dm.outputDir, filename)
+	// Multi-file mode - write files sequentially from allData
+	// Check if there's a "name" field to use as a base directory
+	var baseDir string
+	if nameObj, ok := infoDict["name"]; ok && nameObj.StrVal != nil {
+		baseDir = filepath.Join(dm.outputDir, *nameObj.StrVal)
+	} else {
+		baseDir = dm.outputDir
+	}
 
-	// Write file
-	fmt.Printf("Writing file: %s (%d bytes)\n", filename, len(allData))
-	err := os.WriteFile(outputPath, allData, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
+	dataOffset := 0
+	for _, curFile := range filesObj.List {
+		pathObj, ok := curFile.Dict["path"]
+		if !ok || pathObj.List == nil || len(pathObj.List) == 0 {
+			continue
+		}
+		if pathObj.List[0].StrVal == nil {
+			continue
+		}
+
+		path := *pathObj.List[0].StrVal
+		path = filepath.Join(baseDir, path)
+
+		dir, filename := filepath.Split(path)
+
+		// Create directory if it doesn't exist (dir could be empty for files in root)
+		if dir != "" {
+			if err := os.MkdirAll(dir, os.ModePerm); err != nil {
+				return fmt.Errorf("failed to create directory %s: %w", dir, err)
+			}
+		}
+
+		bytesInFileObj, ok := curFile.Dict["length"]
+		if !ok || bytesInFileObj.IntVal == nil {
+			return fmt.Errorf("undefined how many bytes should be in file: %s", path)
+		}
+		bytesInFile := int(*bytesInFileObj.IntVal)
+
+		// Check if we have enough data left
+		if dataOffset+bytesInFile > len(allData) {
+			return fmt.Errorf("not enough data for file %s: need %d bytes, have %d bytes remaining",
+				filename, bytesInFile, len(allData)-dataOffset)
+		}
+
+		// Extract this file's data from allData
+		fileData := allData[dataOffset : dataOffset+bytesInFile]
+
+		// Write file
+		fmt.Printf("Writing file: %s (%d bytes)\n", path, bytesInFile)
+		err := os.WriteFile(path, fileData, 0644)
+		if err != nil {
+			return fmt.Errorf("failed to write file: %w", err)
+		}
+
+		// Advance offset for next file
+		dataOffset += bytesInFile
 	}
 
 	return nil
