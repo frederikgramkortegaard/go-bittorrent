@@ -2,9 +2,9 @@ package daemon
 
 import (
 	"fmt"
-	"gotorrent/internal"
-	"gotorrent/internal/bencoding"
-	"gotorrent/internal/config"
+	"go-bittorrent/internal"
+	"go-bittorrent/internal/bencoding"
+	"go-bittorrent/internal/config"
 	"os"
 	"path/filepath"
 	"sync"
@@ -27,8 +27,9 @@ type FileEntry struct {
 // DiskManager handles persistent storage of torrent data.
 // It's responsible for writing downloaded pieces to disk and reading pieces for seeding.
 type DiskManager struct {
-	torrentFile bencoding.TorrentFile
-	outputDir   string
+	torrentFile   bencoding.TorrentFile
+	outputDir     string
+	torrentDir    string // Actual directory where torrent files are stored (includes torrent name for multi-file)
 
 	// File structure extracted from torrent metadata
 	files []*FileEntry
@@ -81,6 +82,9 @@ func (dm *DiskManager) extractFileStructure() []*FileEntry {
 		filename := *nameObj.StrVal
 		path := filepath.Join(dm.outputDir, filename)
 
+		// For single-file, torrentDir is just outputDir (file is directly in output)
+		dm.torrentDir = dm.outputDir
+
 		files = append(files, &FileEntry{
 			Path:           path,
 			TotalLength:    length,
@@ -95,8 +99,10 @@ func (dm *DiskManager) extractFileStructure() []*FileEntry {
 	var baseDir string
 	if nameObj, ok := infoDict["name"]; ok && nameObj.StrVal != nil {
 		baseDir = filepath.Join(dm.outputDir, *nameObj.StrVal)
+		dm.torrentDir = baseDir // For multi-file, torrentDir includes the torrent name
 	} else {
 		baseDir = dm.outputDir
+		dm.torrentDir = dm.outputDir
 	}
 
 	// Extract all files
@@ -275,4 +281,11 @@ func (dm *DiskManager) VerifyOnDisk(index int, expectedHash [20]byte) (bool, err
 	// - Calculate SHA1
 	// - Compare with expectedHash
 	return false, nil
+}
+
+// GetOutputDir returns the actual directory where torrent files are stored.
+// For multi-file torrents, this includes the torrent name subdirectory.
+// For single-file torrents, this is just the output directory.
+func (dm *DiskManager) GetOutputDir() string {
+	return dm.torrentDir
 }

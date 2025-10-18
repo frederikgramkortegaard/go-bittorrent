@@ -2,7 +2,7 @@ package libnet_test
 
 import (
 	"errors"
-	"gotorrent/internal/libnet"
+	"go-bittorrent/internal/libnet"
 	"testing"
 )
 

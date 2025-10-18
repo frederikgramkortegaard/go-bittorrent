@@ -38,7 +38,7 @@ func DefaultConfig() *Config {
 		// Network
 		ListenPort: 6881,
 		ClientID:   "-GO0001-",
-		UserAgent:  "gotorrent/0.1",
+		UserAgent:  "go-bittorrent/0.1",
 
 		// Download behavior
 		BlockSize:           16384,

@@ -1,6 +1,6 @@
 package internal
 
-import "gotorrent/internal/libnet"
+import "go-bittorrent/internal/libnet"
 
 // SelectNextPiece picks the next piece to download from a peer (sequential strategy).
 // Returns pieceIndex and true if found, or -1 and false if nothing available.

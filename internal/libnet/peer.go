@@ -2,8 +2,8 @@ package libnet
 
 import (
 	"fmt"
-	"gotorrent/internal/bencoding"
-	"gotorrent/internal/logger"
+	"go-bittorrent/internal/bencoding"
+	"go-bittorrent/internal/logger"
 	"net"
 	"sync/atomic"
 	"time"

@@ -3,7 +3,7 @@ package libnet
 import (
 	"errors"
 	"fmt"
-	"gotorrent/internal/bencoding"
+	"go-bittorrent/internal/bencoding"
 	"io"
 	"net/http"
 	"net/url"

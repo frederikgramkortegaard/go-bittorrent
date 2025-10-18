@@ -6,19 +6,20 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"gotorrent/internal"
-	"gotorrent/internal/bencoding"
-	"gotorrent/internal/config"
-	"gotorrent/internal/libnet"
-	"gotorrent/internal/logger"
+	"go-bittorrent/internal"
+	"go-bittorrent/internal/bencoding"
+	"go-bittorrent/internal/config"
+	"go-bittorrent/internal/libnet"
+	"go-bittorrent/internal/logger"
 	"sync"
 	"time"
 )
 
 // TorrentManager manages all active torrent sessions for the application.
 type TorrentManager struct {
-	Sessions []*TorrentSession
-	Client   *libnet.Client // Shared client for all torrents
+	Sessions   []*TorrentSession
+	sessionsMu sync.RWMutex // Protects Sessions slice
+	Client     *libnet.Client // Shared client for all torrents
 }
 
 // NewTorrentManager creates a new TorrentManager with a shared client.
@@ -27,6 +28,38 @@ func NewTorrentManager(client *libnet.Client) *TorrentManager {
 		Sessions: make([]*TorrentSession, 0),
 		Client:   client,
 	}
+}
+
+// AddSession adds a session to the manager
+func (tm *TorrentManager) AddSession(session *TorrentSession) {
+	tm.sessionsMu.Lock()
+	defer tm.sessionsMu.Unlock()
+	tm.Sessions = append(tm.Sessions, session)
+}
+
+// RemoveSession removes a session at the given index
+func (tm *TorrentManager) RemoveSession(index int) {
+	tm.sessionsMu.Lock()
+	defer tm.sessionsMu.Unlock()
+	if index >= 0 && index < len(tm.Sessions) {
+		tm.Sessions = append(tm.Sessions[:index], tm.Sessions[index+1:]...)
+	}
+}
+
+// GetSessions returns a copy of the sessions slice
+func (tm *TorrentManager) GetSessions() []*TorrentSession {
+	tm.sessionsMu.RLock()
+	defer tm.sessionsMu.RUnlock()
+	sessions := make([]*TorrentSession, len(tm.Sessions))
+	copy(sessions, tm.Sessions)
+	return sessions
+}
+
+// SessionCount returns the number of active sessions
+func (tm *TorrentManager) SessionCount() int {
+	tm.sessionsMu.RLock()
+	defer tm.sessionsMu.RUnlock()
+	return len(tm.Sessions)
 }
 
 // NewTorrentSession creates a new torrent session.
@@ -107,7 +140,7 @@ func (t *TorrentManager) StartTorrentDownloadSession(torrentFile bencoding.Torre
 	}
 
 	// Add session to manager (peers will be added as connections below)
-	t.Sessions = append(t.Sessions, session)
+	t.AddSession(session)
 
 	// Attempt to connect to peers concurrently
 	var wg sync.WaitGroup

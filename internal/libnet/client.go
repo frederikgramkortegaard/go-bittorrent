@@ -3,8 +3,8 @@ package libnet
 import (
 	"crypto/rand"
 	"fmt"
-	"gotorrent/internal/config"
-	"gotorrent/internal/logger"
+	"go-bittorrent/internal/config"
+	"go-bittorrent/internal/logger"
 	"net"
 )
 
