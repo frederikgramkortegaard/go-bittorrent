@@ -1,6 +1,6 @@
 # go-bittorrent
 
-A BitTorrent client with a terminal interface. I wanted something I could run in tmux and seeing as I recently picked up Go, I thought this would be a fun project.
+A BitTorrent client with a terminal interface. I wanted something I could run in tmux and seeing as I recently picked up Go I thought this would be a fun project.
 
 <p align="center">
   <img src="resources/tui.png" alt="TUI Screenshot" width="800">
