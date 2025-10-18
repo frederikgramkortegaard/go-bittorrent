@@ -49,8 +49,9 @@ func NewTorrentSession(torrentFile bencoding.TorrentFile) (*TorrentSession, erro
 	}, nil
 }
 
-// StartTorrentSession creates and starts a new torrent session.
-func (t *TorrentManager) StartTorrentSession(torrentFile bencoding.TorrentFile) (*TorrentSession, error) {
+// StartTorrentDownloadSession creates and starts a new torrent download session.
+// This will download the torrent, write it to disk, and clean up automatically.
+func (t *TorrentManager) StartTorrentDownloadSession(torrentFile bencoding.TorrentFile) (*TorrentSession, error) {
 
 	if torrentFile.Data == nil {
 		return nil, errors.New("torrentfile has no data field")
@@ -187,6 +188,20 @@ func (t *TorrentManager) StartTorrentSession(torrentFile bencoding.TorrentFile) 
 		go session.PeerReadLoop(ctx, peer)
 		go session.PeerDownloadLoop(ctx, peer)
 	}
+
+	// Start completion monitor goroutine
+	go func() {
+		// Wait for download to complete
+		for !session.PieceManager.IsComplete() {
+			time.Sleep(1 * time.Second)
+		}
+
+		// Handle completion - write to disk and clean up
+		err := session.Complete()
+		if err != nil {
+			fmt.Printf("Error completing torrent: %v\n", err)
+		}
+	}()
 
 	// @TODO : Start a loop that continuously requests / updates from the tracker, and
 	// attempts to re-connect to failed peers etc.
@@ -389,6 +404,25 @@ func (ts *TorrentSession) Cancel() {
 	if ts.cancel != nil {
 		ts.cancel()
 	}
+}
+
+// Complete handles torrent completion - writes to disk and cleans up.
+func (ts *TorrentSession) Complete() error {
+	fmt.Println("\nTorrent download complete!")
+	fmt.Printf("Downloaded %d pieces\n", ts.PieceManager.CompletedPieces())
+
+	// Write to disk
+	err := ts.DiskManager.WriteToDisk(ts.PieceManager)
+	if err != nil {
+		return fmt.Errorf("failed to write to disk: %w", err)
+	}
+
+	fmt.Println("File written to disk successfully!")
+
+	// Shut down all peer loops
+	ts.Cancel()
+
+	return nil
 }
 
 func (ts *TorrentSession) AddConnection(c *libnet.PeerConnection) {

@@ -46,7 +46,7 @@ func main() {
 	torrentManager := daemon.NewTorrentManager(client)
 
 	// Start downloading this torrent
-	session, err := torrentManager.StartTorrentSession(torrent)
+	session, err := torrentManager.StartTorrentDownloadSession(torrent)
 	if err != nil {
 		fmt.Println("Error starting torrent session:", err)
 		os.Exit(1)
@@ -57,25 +57,10 @@ func main() {
 	fmt.Printf("Total size: %d bytes (%.2f MB)\n", session.PieceManager.TotalSize(), float64(session.PieceManager.TotalSize())/(1024*1024))
 	fmt.Println("\nDownloading...")
 
+	// Wait for download to complete (completion is handled automatically by the session)
 	for !session.PieceManager.IsComplete() {
 		time.Sleep(1 * time.Second)
 	}
 
-	fmt.Println("\n\nDownload complete!")
-	fmt.Printf("Downloaded %d pieces\n", session.PieceManager.CompletedPieces())
-
-	// Cancel context to shut down all peer loops gracefully
-	if session != nil {
-		session.Cancel()
-	}
-
-	// Write to disk
-	err = session.DiskManager.WriteToDisk(session.PieceManager)
-	if err != nil {
-		fmt.Println("Error writing to disk:", err)
-		os.Exit(1)
-	}
-
-	fmt.Println("File written to disk successfully!")
 	fmt.Println("Download session completed!")
 }
