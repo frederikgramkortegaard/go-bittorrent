@@ -49,14 +49,45 @@ func PrintDict(dict map[string]BencodedObject, indent int) {
 }
 
 // ExtractPeersFromTrackerResponse extracts peer information from a tracker response.
+// Supports both compact binary format (6 bytes per peer) and dictionary list format.
 func ExtractPeersFromTrackerResponse(data map[string]BencodedObject) ([]PeerStruct, error) {
 
-	peers := make([]PeerStruct, 0, 0)
+	peers := make([]PeerStruct, 0)
 
 	if _, ok := data["peers"]; !ok {
 		return nil, errors.New("peers not found in data")
 	}
 
+	// Check if peers is in compact binary format (StrVal) or list format
+	if data["peers"].StrVal != nil {
+		// Compact binary format: each peer is 6 bytes (4 bytes IP + 2 bytes port)
+		peerData := *data["peers"].StrVal
+		if len(peerData)%6 != 0 {
+			return nil, errors.New("invalid compact peer data length (must be multiple of 6)")
+		}
+
+		for i := 0; i < len(peerData); i += 6 {
+			// Extract IP (4 bytes)
+			ip := fmt.Sprintf("%d.%d.%d.%d",
+				uint8(peerData[i]),
+				uint8(peerData[i+1]),
+				uint8(peerData[i+2]),
+				uint8(peerData[i+3]))
+
+			// Extract port (2 bytes, big-endian)
+			port := int64(uint8(peerData[i+4]))<<8 | int64(uint8(peerData[i+5]))
+
+			peers = append(peers, PeerStruct{
+				PeerAddress: ip,
+				PeerPort:    port,
+				PeerID:      "",
+			})
+		}
+
+		return peers, nil
+	}
+
+	// Dictionary list format (non-compact)
 	if data["peers"].List == nil {
 		return nil, errors.New("list of peers has no bencoded list element")
 	}
@@ -76,7 +107,7 @@ func ExtractPeersFromTrackerResponse(data map[string]BencodedObject) ([]PeerStru
 		peerIP := *elem.Dict["ip"].StrVal
 
 		// Port
-		if _, ok := elem.Dict["port"]; !ok  || elem.Dict["port"].IntVal == nil {
+		if _, ok := elem.Dict["port"]; !ok || elem.Dict["port"].IntVal == nil {
 			continue
 		}
 
@@ -84,8 +115,8 @@ func ExtractPeersFromTrackerResponse(data map[string]BencodedObject) ([]PeerStru
 
 		peers = append(peers, PeerStruct{
 			PeerAddress: peerIP,
-			PeerPort: peerPort,
-			PeerID: "",
+			PeerPort:    peerPort,
+			PeerID:      "",
 		})
 
 	}

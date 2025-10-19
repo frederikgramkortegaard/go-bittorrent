@@ -64,6 +64,13 @@ func (pm *PieceManager) AddBlock(pieceIndex, blockIndex int, data []byte) bool {
 	}
 
 	piece := pm.Pieces[pieceIndex]
+
+	// If Blocks is nil, the piece was already completed and cleared
+	// This can happen if we receive duplicate blocks from slow peers
+	if piece.Blocks == nil {
+		return false
+	}
+
 	piece.Blocks[blockIndex] = data
 
 	// Remove from pending blocks

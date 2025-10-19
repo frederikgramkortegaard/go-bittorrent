@@ -626,9 +626,12 @@ func (m *Model) readNewLogLines() {
 		return
 	}
 
-	// Read new lines from log file
+	// Read new lines from log file, but limit to prevent overwhelming the TUI
 	reader := bufio.NewReader(m.logFile)
-	for {
+	linesRead := 0
+	maxLinesPerTick := 50 // Don't read more than 50 lines per tick to avoid UI freezing
+
+	for linesRead < maxLinesPerTick {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err != io.EOF {
@@ -638,13 +641,20 @@ func (m *Model) readNewLogLines() {
 			break
 		}
 
+		// Skip DEBUG lines to reduce noise (only show INFO, WARN, ERROR)
+		if strings.Contains(line, "[DEBUG]") {
+			linesRead++
+			continue
+		}
+
 		// Add line to buffer (trim newline)
 		line = strings.TrimSuffix(line, "\n")
 		m.logLines = append(m.logLines, line)
+		linesRead++
 
-		// Keep only last 1000 lines to avoid memory issues
-		if len(m.logLines) > 1000 {
-			m.logLines = m.logLines[len(m.logLines)-1000:]
+		// Keep only last 500 lines to avoid memory issues
+		if len(m.logLines) > 500 {
+			m.logLines = m.logLines[len(m.logLines)-500:]
 		}
 	}
 }
