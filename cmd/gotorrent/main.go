@@ -87,19 +87,21 @@ func main() {
 			os.Exit(1)
 		}
 
-		log.Info("Starting torrent download session")
-		_, err = torrentManager.StartTorrentDownloadSession(torrent)
+		log.Info("Starting torrent session")
+		_, err = torrentManager.StartTorrentSession(torrent)
 		if err != nil {
 			log.Error("Error starting torrent session: %v", err)
 			os.Exit(1)
 		}
 	}
 
+	// @NOTE : This is unsafe, no mutex on session, but for this specific case we never
+	// modify sessions again, so its fine for testing.
 	isComplete := true
 	for {
 
 		for _, session := range torrentManager.Sessions {
-			for !session.PieceManager.IsComplete() {
+		  if !session.PieceManager.IsComplete() {
 				isComplete = false
 			}
 		}
@@ -111,10 +113,4 @@ func main() {
 		isComplete = true
 	}
 
-	// Start the TUI with original stderr for output
-	// Logs are redirected to file, TUI gets clean terminal
-	//	if err := tui.RunTUI(torrentManager, cfg, origStderr, "go-bittorrent.log"); err != nil {
-	//	fmt.Fprintf(origStderr, "TUI error: %v\n", err)
-	//	os.Exit(1)
-	//}
 }

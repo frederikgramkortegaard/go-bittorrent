@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"os"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -63,8 +64,10 @@ func NewTorrentSession(torrentFile bencoding.TorrentFile, cfg *config.Config) (*
 			pieceInfo.Hashes,
 			cfg.BlockSize,
 		),
-		DiskManager: NewDiskManager(torrentFile, cfg.OutputDir, cfg),
-		Config:      cfg,
+		DiskManager:  NewDiskManager(torrentFile, cfg.OutputDir, cfg),
+		IsSeedMature: false,
+		Config:       cfg,
+		doneChan:     nil, // Will be created when download sequence starts
 	}
 
 	// Create logger for this session
@@ -73,16 +76,12 @@ func NewTorrentSession(torrentFile bencoding.TorrentFile, cfg *config.Config) (*
 	return session, nil
 }
 
-// StartTorrentDownloadSession creates and starts a new torrent download session.
-// This will download the torrent, write it to disk, and clean up automatically.
-func (t *TorrentManager) StartTorrentDownloadSession(torrentFile bencoding.TorrentFile) (*TorrentSession, error) {
+// StartTorrentSession creates and starts a new torrent session.
+// This will acquire missing pieces, write them to disk, and can seed when complete.
+func (t *TorrentManager) StartTorrentSession(torrentFile bencoding.TorrentFile) (*TorrentSession, error) {
 
 	if torrentFile.Data == nil {
 		return nil, errors.New("torrentfile has no data field")
-	}
-
-	if _, ok := torrentFile.Data["announce"]; !ok {
-		return nil, errors.New("no annouce field in torrentfile")
 	}
 
 	session, err := NewTorrentSession(torrentFile, t.Client.Config)
@@ -90,8 +89,208 @@ func (t *TorrentManager) StartTorrentDownloadSession(torrentFile bencoding.Torre
 		return nil, err
 	}
 
+	// Add session to manager
+	t.AddSession(session)
+
+	// Create context for coordinating peer loops
+	ctx, cancel := context.WithCancel(context.Background())
+	session.ctx = ctx
+	session.cancel = cancel
+
+	//
+
+	isSeedMature := false       // We have at least a single fully completed and verified piece of this torrent on-disk
+	shouldBeDownloaded := true // We're missing at least a single block of the data on-disk
+
+	session.IsSeedMature = isSeedMature
+
+	// Only relevant for downloading
+	if shouldBeDownloaded {
+		if _, ok := torrentFile.Data["announce"]; !ok {
+			return session, errors.New("no annouce field in torrentfile")
+		}
+
+		// @NOTE : Technically this, depending on implementation, doesn't pick off where it left off
+		// if we managed to download any more than 0.0% meaning any of the file, we should make that
+		// work better
+		err = session.InitiateDownloadSequence(t, ctx)
+		if err != nil {
+			return session, err
+		}
+	}
+
+	// @NOTE : If we don't already have all of the torrent, we setup a download loop, it is not
+	// required for us to setup a loop for seeding, as since this session now exists in-memory, the
+	// libnet/client.go will on-message received, validate the message, and then use the infohash
+	// to try and find this session in the TorrentManager's Session map, and from there it can access
+	// this sessions DiskManager and use ReadPiece / ReadBlock.
+
+	return session, nil
+}
+
+// TorrentSession represents an active download/upload session for a single torrent.
+type TorrentSession struct {
+	TorrentFile   bencoding.TorrentFile
+	Connections   []*libnet.PeerConnection // All peer connections (filter by .Status)
+	PieceManager  *internal.PieceManager
+	DiskManager   *DiskManager
+	Config        *config.Config
+	connectionsMu sync.Mutex
+	Logger        *logger.Logger
+
+	// Context for coordinating goroutine shutdown
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	// Channel closed when torrent completes (all pieces acquired) or is cancelled (broadcasts to all waiters)
+	doneChan chan struct{}
+	doneOnce sync.Once // Ensures doneChan is only closed once
+	doneErr  error     // Error if cancelled/failed, nil if successful completion
+
+	// Meta
+	IsSeedMature bool
+}
+
+// String implements fmt.Stringer for TorrentSession
+func (ts *TorrentSession) String() string {
+	// Try to get name from torrent file
+	if info, ok := ts.TorrentFile.Data["info"]; ok && info.Dict != nil {
+		if nameObj, ok := info.Dict["name"]; ok && nameObj.StrVal != nil {
+			return fmt.Sprintf("Torrent:%s", *nameObj.StrVal)
+		}
+	}
+	// Fallback to info hash
+	return fmt.Sprintf("Torrent:%x", ts.TorrentFile.InfoHash[:8])
+}
+
+func (ts *TorrentSession) PeerReadLoop(ctx context.Context, peer *libnet.PeerConnection) {
+	// Set initial read deadline
+	peer.Connection.SetReadDeadline(time.Now().Add(ts.Config.PeerReadTimeout))
+
+	for {
+		select {
+		case <-ctx.Done():
+			peer.Logger.Debug("Read loop shutting down")
+			return
+		default:
+		}
+
+		msg, err := libnet.ReadMessage(peer.Connection)
+		if err != nil {
+			peer.Logger.Error("Failed to read message: %v", err)
+			peer.SetStatus(libnet.StatusFailed)
+			return
+		}
+
+		// Reset deadline after successful read
+		peer.Connection.SetReadDeadline(time.Now().Add(ts.Config.PeerReadTimeout))
+		peer.LastSeen = time.Now()
+
+		if msg.ID == nil {
+			// Keep-alive, ignore
+			continue
+		}
+
+		switch *msg.ID {
+
+		case libnet.MsgUnchoke:
+			peer.Logger.Info("Unchoked by peer")
+			peer.PeerChoking.Store(false)
+
+		case libnet.MsgChoke:
+			peer.Logger.Warn("Choked by peer")
+			peer.PeerChoking.Store(true)
+
+		case libnet.MsgHave:
+			// @TODO : Not yet implemented - for now we're only downloading and we dont really
+			// care about pareto efficiency
+
+		case libnet.MsgPiece:
+			// Parse PIECE message: <index><begin><block data>
+			if len(msg.Payload) < 8 {
+				peer.Logger.Error("Invalid PIECE message (payload too short)")
+				continue
+			}
+
+			receivedPieceIndex := int(binary.BigEndian.Uint32(msg.Payload[0:4]))
+			receivedBegin := int32(binary.BigEndian.Uint32(msg.Payload[4:8]))
+			blockData := msg.Payload[8:]
+
+			peer.Logger.Debug("Received piece=%d begin=%d len=%d", receivedPieceIndex, receivedBegin, len(blockData))
+
+			// Calculate block index from begin offset
+			receivedBlockIndex := int(receivedBegin / ts.PieceManager.BlockSize)
+
+			// Signal that a request slot is now available (non-blocking)
+			select {
+			case <-peer.RequestChan:
+				// Successfully drained one request slot
+			default:
+				// Channel was already empty, that's fine
+			}
+
+			// Store the block (this will also remove from pending)
+			complete := ts.PieceManager.AddBlock(receivedPieceIndex, receivedBlockIndex, blockData)
+
+			if complete {
+				// Piece is complete, verify it
+				if ts.PieceManager.VerifyPiece(receivedPieceIndex) {
+					ts.Logger.Info("Piece %d verified successfully", receivedPieceIndex)
+
+					// Queue piece for writing to disk
+					pieceData := ts.PieceManager.GetPieceData(receivedPieceIndex)
+					if pieceData != nil {
+						ts.DiskManager.QueueWrite(receivedPieceIndex, pieceData)
+						// Free memory by clearing the piece data
+						ts.PieceManager.ClearPieceData(receivedPieceIndex)
+					}
+
+					// Check if all pieces are complete
+					if ts.PieceManager.IsComplete() {
+						go ts.Complete()
+					}
+				} else {
+					ts.Logger.Warn("Piece %d FAILED verification, re-downloading", receivedPieceIndex)
+					// Mark piece as failed and re-download
+					ts.PieceManager.RemovePiece(receivedPieceIndex)
+				}
+			}
+
+		default:
+			peer.Logger.Warn("Received unhandled message ID=%d", *msg.ID)
+		}
+	}
+}
+
+func (ts *TorrentSession) InitiateDownloadSequence(torrentManager *TorrentManager, ctx context.Context) error {
+	// Check if download sequence already in progress
+	if ts.doneChan == nil {
+		// First time - create the channel
+		ts.Logger.Info("Initiating first download sequence")
+		ts.doneChan = make(chan struct{})
+	} else {
+		// Not first time - check if previous download is still in progress
+		select {
+		case <-ts.doneChan:
+			// Channel is closed (download completed/cancelled), reset for new sequence
+			ts.Logger.Info("Resetting download sequence after previous completion")
+			ts.doneChan = make(chan struct{})
+			ts.doneOnce = sync.Once{}
+			ts.doneErr = nil
+		default:
+			// Channel is still open, download already in progress
+			ts.Logger.Info("Download sequence already in progress, rejecting duplicate initiation")
+			return fmt.Errorf("download sequence already in progress for this torrent")
+		}
+	}
+
+	session := ts //@TODO : CLEANUP
+
 	// Calculate total size for tracker request
 	totalSize := uint64(session.PieceManager.TotalSize())
+	torrentFile := session.TorrentFile
+
+	t := torrentManager // @TODO : CLEANUP
 
 	// Request data from the tracker using the shared client
 	response, err := t.Client.SendTrackerRequest(torrentFile, libnet.SendTrackerRequestParams{
@@ -106,7 +305,7 @@ func (t *TorrentManager) StartTorrentDownloadSession(torrentFile bencoding.Torre
 	})
 
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	bencoding.PrintDict(response, 0)
@@ -114,16 +313,13 @@ func (t *TorrentManager) StartTorrentDownloadSession(torrentFile bencoding.Torre
 	// Extract peers from tracker response
 	peers, err := bencoding.ExtractPeersFromTrackerResponse(response)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	// Limit number of peers to connect to
 	if len(peers) > t.Client.Config.MaxPeersPerTorrent {
 		peers = peers[:t.Client.Config.MaxPeersPerTorrent]
 	}
-
-	// Add session to manager (peers will be added as connections below)
-	t.AddSession(session)
 
 	// Attempt to connect to peers concurrently
 	var wg sync.WaitGroup
@@ -222,14 +418,8 @@ func (t *TorrentManager) StartTorrentDownloadSession(torrentFile bencoding.Torre
 	// Check if we have any active peers
 	activePeers := session.GetActivePeers()
 	if len(activePeers) == 0 {
-		return nil, fmt.Errorf("no active peers available - all connections failed")
+		return fmt.Errorf("no active peers available - all connections failed")
 	}
-
-	// Create context for coordinating peer loops
-	ctx, cancel := context.WithCancel(context.Background())
-	session.ctx = ctx
-	session.cancel = cancel
-
 	// Start download loops for each active peer
 	for _, peer := range activePeers {
 		go session.PeerReadLoop(ctx, peer)
@@ -238,12 +428,16 @@ func (t *TorrentManager) StartTorrentDownloadSession(torrentFile bencoding.Torre
 
 	// Start completion monitor goroutine
 	go func() {
-		// Wait for download to complete
-		for !session.PieceManager.IsComplete() {
-			time.Sleep(session.Config.CompletionPollInterval)
+		// Wait for torrent to complete or be cancelled (blocks until doneChan is closed)
+		<-session.doneChan
+
+		if session.doneErr != nil {
+			// Session was cancelled or failed
+			session.Logger.Info("Torrent session ended: %v", session.doneErr)
+			return
 		}
 
-		// Handle completion - write to disk and clean up
+		// All pieces acquired successfully - handle completion
 		err := session.Complete()
 		if err != nil {
 			session.Logger.Error("Error completing torrent: %v", err)
@@ -252,129 +446,7 @@ func (t *TorrentManager) StartTorrentDownloadSession(torrentFile bencoding.Torre
 
 	// @TODO : Start a loop that continuously requests / updates from the tracker, and
 	// attempts to re-connect to failed peers etc.
-
-	return session, nil
-}
-
-// TorrentSession represents an active download/upload session for a single torrent.
-type TorrentSession struct {
-	TorrentFile   bencoding.TorrentFile
-	Connections   []*libnet.PeerConnection // All peer connections (filter by .Status)
-	PieceManager  *internal.PieceManager
-	DiskManager   *DiskManager
-	Config        *config.Config
-	connectionsMu sync.Mutex
-	Logger        *logger.Logger
-
-	// Context for coordinating goroutine shutdown
-	ctx    context.Context
-	cancel context.CancelFunc
-}
-
-// String implements fmt.Stringer for TorrentSession
-func (ts *TorrentSession) String() string {
-	// Try to get name from torrent file
-	if info, ok := ts.TorrentFile.Data["info"]; ok && info.Dict != nil {
-		if nameObj, ok := info.Dict["name"]; ok && nameObj.StrVal != nil {
-			return fmt.Sprintf("Torrent:%s", *nameObj.StrVal)
-		}
-	}
-	// Fallback to info hash
-	return fmt.Sprintf("Torrent:%x", ts.TorrentFile.InfoHash[:8])
-}
-
-func (ts *TorrentSession) PeerReadLoop(ctx context.Context, peer *libnet.PeerConnection) {
-	// Set initial read deadline
-	peer.Connection.SetReadDeadline(time.Now().Add(ts.Config.PeerReadTimeout))
-
-	for {
-		select {
-		case <-ctx.Done():
-			peer.Logger.Debug("Read loop shutting down")
-			return
-		default:
-		}
-
-		msg, err := libnet.ReadMessage(peer.Connection)
-		if err != nil {
-			peer.Logger.Error("Failed to read message: %v", err)
-			peer.SetStatus(libnet.StatusFailed)
-			return
-		}
-
-		// Reset deadline after successful read
-		peer.Connection.SetReadDeadline(time.Now().Add(ts.Config.PeerReadTimeout))
-		peer.LastSeen = time.Now()
-
-		if msg.ID == nil {
-			// Keep-alive, ignore
-			continue
-		}
-
-		switch *msg.ID {
-
-		case libnet.MsgUnchoke:
-			peer.Logger.Info("Unchoked by peer")
-			peer.PeerChoking.Store(false)
-
-		case libnet.MsgChoke:
-			peer.Logger.Warn("Choked by peer")
-			peer.PeerChoking.Store(true)
-
-		case libnet.MsgHave:
-			// @TODO : Not yet implemented - for now we're only downloading and we dont really
-			// care about pareto efficiency
-
-		case libnet.MsgPiece:
-			// Parse PIECE message: <index><begin><block data>
-			if len(msg.Payload) < 8 {
-				peer.Logger.Error("Invalid PIECE message (payload too short)")
-				continue
-			}
-
-			receivedPieceIndex := int(binary.BigEndian.Uint32(msg.Payload[0:4]))
-			receivedBegin := int32(binary.BigEndian.Uint32(msg.Payload[4:8]))
-			blockData := msg.Payload[8:]
-
-			peer.Logger.Debug("Received piece=%d begin=%d len=%d", receivedPieceIndex, receivedBegin, len(blockData))
-
-			// Calculate block index from begin offset
-			receivedBlockIndex := int(receivedBegin / ts.PieceManager.BlockSize)
-
-			// Signal that a request slot is now available (non-blocking)
-			select {
-			case <-peer.RequestChan:
-				// Successfully drained one request slot
-			default:
-				// Channel was already empty, that's fine
-			}
-
-			// Store the block (this will also remove from pending)
-			complete := ts.PieceManager.AddBlock(receivedPieceIndex, receivedBlockIndex, blockData)
-
-			if complete {
-				// Piece is complete, verify it
-				if ts.PieceManager.VerifyPiece(receivedPieceIndex) {
-					ts.Logger.Info("Piece %d verified successfully", receivedPieceIndex)
-
-					// Queue piece for writing to disk
-					pieceData := ts.PieceManager.GetPieceData(receivedPieceIndex)
-					if pieceData != nil {
-						ts.DiskManager.QueueWrite(receivedPieceIndex, pieceData)
-						// Free memory by clearing the piece data
-						ts.PieceManager.ClearPieceData(receivedPieceIndex)
-					}
-				} else {
-					ts.Logger.Warn("Piece %d FAILED verification, re-downloading", receivedPieceIndex)
-					// Mark piece as failed and re-download
-					ts.PieceManager.RemovePiece(receivedPieceIndex)
-				}
-			}
-
-		default:
-			peer.Logger.Warn("Received unhandled message ID=%d", *msg.ID)
-		}
-	}
+	return nil
 }
 
 // PeerDownloadLoop handles downloading pieces from a single peer.
@@ -467,27 +539,42 @@ func (ts *TorrentSession) PeerDownloadLoop(ctx context.Context, peer *libnet.Pee
 	}
 }
 
-// Cancel cancels the context, shutting down all peer loops gracefully.
-func (ts *TorrentSession) Cancel() {
+// StopPeerLoops stops all peer read/download loops by cancelling the context.
+// This closes all peer connections gracefully.
+func (ts *TorrentSession) StopPeerLoops() {
 	if ts.cancel != nil {
-		ts.cancel()
+		ts.cancel() // Cancel context -> stops PeerReadLoop and PeerDownloadLoop
 	}
 }
 
-// Complete handles torrent completion - writes to disk and cleans up.
+// Cancel stops the torrent session and signals cancellation.
+// Use this when the user manually stops a torrent.
+func (ts *TorrentSession) Cancel() {
+	ts.StopPeerLoops()
+
+	// Signal cancellation via doneChan
+	ts.doneOnce.Do(func() {
+		ts.doneErr = fmt.Errorf("cancelled")
+		close(ts.doneChan)
+	})
+}
+
+// Complete handles torrent completion - stops peer connections, marks ready for seeding,
+// and signals completion via doneChan.
+// This is called when all pieces have been acquired and verified.
 func (ts *TorrentSession) Complete() error {
-	ts.Logger.Info("Torrent download complete! Downloaded %d pieces", ts.PieceManager.CompletedPieces())
+	ts.Logger.Info("Torrent complete, all %d pieces acquired", ts.PieceManager.CompletedPieces())
 
-	// Write to disk
-	err := ts.DiskManager.WriteToDisk(ts.PieceManager)
-	if err != nil {
-		return fmt.Errorf("failed to write to disk: %w", err)
-	}
+	// Stop all peer read/download loops
+	ts.StopPeerLoops()
 
-	ts.Logger.Info("File written to disk successfully")
+	ts.IsSeedMature = true // Mark as ready to seed
 
-	// Shut down all peer loops
-	ts.Cancel()
+	// Signal successful completion via doneChan (doneErr stays nil)
+	ts.doneOnce.Do(func() {
+		ts.doneErr = nil
+		close(ts.doneChan)
+	})
 
 	return nil
 }

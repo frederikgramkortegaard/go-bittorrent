@@ -52,6 +52,12 @@ func NewDiskManager(torrentFile bencoding.TorrentFile, outputDir string, cfg *co
 	// Extract file structure from torrent metadata
 	dm.files = dm.extractFileStructure()
 
+	// Print file structure for debugging
+	fmt.Printf("DiskManager initialized with %d files:\n", len(dm.files))
+	for i, file := range dm.files {
+		fmt.Printf("  File %d: %s (%d bytes)\n", i, file.Path, file.TotalLength)
+	}
+
 	// Start write worker goroutine
 	go dm.writeWorker()
 
@@ -149,7 +155,10 @@ func (dm *DiskManager) writeWorker() {
 			return
 
 		case req := <-dm.writeQueue:
-			_ = dm.WritePiece(req.PieceIndex, req.Data)
+			err := dm.WritePiece(req.PieceIndex, req.Data)
+			if err != nil {
+				fmt.Printf("ERROR writing piece %d to disk: %v\n", req.PieceIndex, err)
+			}
 			dm.wg.Done()
 		}
 	}
@@ -164,31 +173,67 @@ func (dm *DiskManager) QueueWrite(pieceIndex int, data []byte) {
 	}
 }
 
-// WritePiece writes a complete verified piece to disk.
+// WritePiece writes a complete verified piece to disk at the correct offset.
 // For multi-file torrents, this may span multiple files.
 // This is called by writeWorker, so it runs on the async worker goroutine.
 func (dm *DiskManager) WritePiece(index int, data []byte) error {
+	infoDict := dm.torrentFile.Data["info"].Dict
+
+	// Get piece length
+	pieceLengthObj, ok := infoDict["piece length"]
+	if !ok || pieceLengthObj.IntVal == nil {
+		return fmt.Errorf("piece length not found in torrent metadata")
+	}
+	pieceLength := int64(*pieceLengthObj.IntVal)
+
+	// Calculate the absolute byte offset for this piece in the torrent
+	pieceOffset := int64(index) * pieceLength
+
+	// Track position within the piece data
 	dataOffset := 0
 	dataRemaining := len(data)
 
+	// Calculate which file(s) this piece belongs to
+	var currentFileOffset int64 = 0 // Absolute offset in torrent
+
 	for _, file := range dm.files {
-		// Skip files that are already complete
-		if file.BytesRemaining == 0 {
+		fileStart := currentFileOffset
+		fileEnd := currentFileOffset + int64(file.TotalLength)
+
+		// Check if this piece overlaps with this file
+		pieceEnd := pieceOffset + int64(len(data))
+
+		if pieceEnd <= fileStart || pieceOffset >= fileEnd {
+			// Piece doesn't touch this file
+			currentFileOffset = fileEnd
 			continue
 		}
 
-		// How much of this piece belongs to this file?
-		bytesToWrite := dataRemaining
-		if bytesToWrite > file.BytesRemaining {
-			bytesToWrite = file.BytesRemaining
+		// Calculate the overlap between piece and file
+		writeStart := pieceOffset
+		if writeStart < fileStart {
+			writeStart = fileStart
 		}
 
+		writeEnd := pieceEnd
+		if writeEnd > fileEnd {
+			writeEnd = fileEnd
+		}
+
+		bytesToWrite := int(writeEnd - writeStart)
 		if bytesToWrite == 0 {
-			break // No more data to write
+			currentFileOffset = fileEnd
+			continue
 		}
 
-		// Extract the chunk for this file
-		chunk := data[dataOffset : dataOffset+bytesToWrite]
+		// Calculate offset within the file
+		fileWriteOffset := writeStart - fileStart
+
+		// Calculate offset within the piece data
+		pieceDataOffset := writeStart - pieceOffset
+
+		// Extract the chunk to write
+		chunk := data[pieceDataOffset : pieceDataOffset+int64(bytesToWrite)]
 
 		// Ensure directory exists
 		dir, _ := filepath.Split(file.Path)
@@ -198,29 +243,25 @@ func (dm *DiskManager) WritePiece(index int, data []byte) error {
 			}
 		}
 
-		// Open file in append mode (or create if doesn't exist)
-		f, err := os.OpenFile(file.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		// Open file for writing at specific offset
+		f, err := os.OpenFile(file.Path, os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			return fmt.Errorf("failed to open file %s: %w", file.Path, err)
 		}
 
-		// Write chunk
-		n, err := f.Write(chunk)
+		// Write chunk at the correct offset
+		n, err := f.WriteAt(chunk, fileWriteOffset)
 		f.Close()
 		if err != nil {
 			return fmt.Errorf("failed to write to file %s: %w", file.Path, err)
 		}
 
-		// Update file state
-		file.BytesWritten += n
-		file.BytesRemaining -= n
+		fmt.Printf("Wrote piece %d (%d bytes) to %s at offset %d\n",
+			index, n, filepath.Base(file.Path), fileWriteOffset)
 
-		fmt.Printf("Wrote %d bytes to %s (total: %d/%d)\n",
-			n, file.Path, file.BytesWritten, file.TotalLength)
-
-		// Move to next chunk
 		dataOffset += bytesToWrite
 		dataRemaining -= bytesToWrite
+		currentFileOffset = fileEnd
 
 		if dataRemaining == 0 {
 			break
