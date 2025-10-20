@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"bytes"
-	"os"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -56,7 +55,7 @@ func NewTorrentSession(torrentFile bencoding.TorrentFile, cfg *config.Config) (*
 
 	session := &TorrentSession{
 		TorrentFile: torrentFile,
-		Connections: make([]*libnet.PeerConnection, 0),
+		Connections: make(map[string]*libnet.PeerConnection),
 		PieceManager: internal.NewPieceManager(
 			pieceInfo.TotalPieces,
 			pieceInfo.PieceLength,
@@ -131,11 +130,11 @@ func (t *TorrentManager) StartTorrentSession(torrentFile bencoding.TorrentFile) 
 // TorrentSession represents an active download/upload session for a single torrent.
 type TorrentSession struct {
 	TorrentFile   bencoding.TorrentFile
-	Connections   []*libnet.PeerConnection // All peer connections (filter by .Status)
+	Connections   map[string]*libnet.PeerConnection // Map of peer address -> connection
 	PieceManager  *internal.PieceManager
 	DiskManager   *DiskManager
 	Config        *config.Config
-	connectionsMu sync.Mutex
+	connectionsMu sync.RWMutex
 	Logger        *logger.Logger
 
 	// Context for coordinating goroutine shutdown
@@ -179,6 +178,7 @@ func (ts *TorrentSession) PeerReadLoop(ctx context.Context, peer *libnet.PeerCon
 		if err != nil {
 			peer.Logger.Error("Failed to read message: %v", err)
 			peer.SetStatus(libnet.StatusFailed)
+			ts.RemoveConnection(peer.ConnectionAddress)
 			return
 		}
 
@@ -284,24 +284,21 @@ func (ts *TorrentSession) InitiateDownloadSequence(torrentManager *TorrentManage
 		}
 	}
 
-	session := ts //@TODO : CLEANUP
 
 	// Calculate total size for tracker request
-	totalSize := uint64(session.PieceManager.TotalSize())
-	torrentFile := session.TorrentFile
-
-	t := torrentManager // @TODO : CLEANUP
+	totalSize := uint64(ts.PieceManager.TotalSize())
+	torrentFile := ts.TorrentFile
 
 	// Request data from the tracker using the shared client
-	response, err := t.Client.SendTrackerRequest(torrentFile, libnet.SendTrackerRequestParams{
+	response, err := torrentManager.Client.SendTrackerRequest(torrentFile, libnet.SendTrackerRequestParams{
 		TrackerAddress: *torrentFile.Data["announce"].StrVal,
-		PeerID:         string(t.Client.ID[:]),
+		PeerID:         string(torrentManager.Client.ID[:]),
 		Event:          "started",
-		Port:           t.Client.Config.ListenPort,
+		Port:           torrentManager.Client.Config.ListenPort,
 		Uploaded:       0,
 		Downloaded:     0,
 		Left:           totalSize,
-		Compact:        t.Client.Config.CompactMode,
+		Compact:        torrentManager.Client.Config.CompactMode,
 	})
 
 	if err != nil {
@@ -317,34 +314,160 @@ func (ts *TorrentSession) InitiateDownloadSequence(torrentManager *TorrentManage
 	}
 
 	// Limit number of peers to connect to
-	if len(peers) > t.Client.Config.MaxPeersPerTorrent {
-		peers = peers[:t.Client.Config.MaxPeersPerTorrent]
+	if len(peers) > torrentManager.Client.Config.MaxPeersPerTorrent {
+		peers = peers[:torrentManager.Client.Config.MaxPeersPerTorrent]
 	}
 
-	// Attempt to connect to peers concurrently
-	var wg sync.WaitGroup
-	for _, peer := range peers {
+	// Connect to peers and perform handshakes
+	connectDone := ts.ConnectToPeers(torrentManager.Client, peers)
 
+	// Wait for all connection attempts to complete
+	<-connectDone
+
+	// Print summary
+	ts.Logger.Info("Connection summary - Active: %d",
+		len(ts.Connections))
+
+	// Check if we have any active peers
+	activePeers := ts.GetActivePeers()
+	if len(activePeers) == 0 {
+		return fmt.Errorf("no active peers available - all connections failed")
+	}
+	// Start download loops for each active peer
+	for _, peer := range activePeers {
+		go ts.PeerReadLoop(ctx, peer)
+		go ts.PeerDownloadLoop(ctx, peer)
+	}
+
+	// Start completion monitor goroutine
+	go func() {
+		// Wait for torrent to complete or be cancelled (blocks until doneChan is closed)
+		<-ts.doneChan
+
+		if ts.doneErr != nil {
+			// ts was cancelled or failed
+			ts.Logger.Info("Torrent ts ended: %v", ts.doneErr)
+			return
+		}
+
+		// All pieces acquired successfully - handle completion
+		err := ts.Complete()
+		if err != nil {
+			ts.Logger.Error("Error completing torrent: %v", err)
+		}
+	}()
+
+	// Start peer health monitoring loop
+	go ts.PeerHealthLoop(torrentManager, ctx)
+
+	return nil
+}
+
+// PeerHealthLoop periodically requests new peers from the tracker and attempts to connect.
+// Runs while the download is active (doneChan not closed).
+func (ts *TorrentSession) PeerHealthLoop(torrentManager *TorrentManager, ctx context.Context) {
+	ticker := time.NewTicker(ts.Config.PeerHealthCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		// Check if doneChan is closed (only if it's not nil)
+		if ts.doneChan != nil {
+			select {
+			case <-ts.doneChan:
+				ts.Logger.Info("Peer health loop stopping - torrent complete")
+				return
+			default:
+				// doneChan still open, continue
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			ts.Logger.Info("Peer health loop shutting down")
+			return
+		case <-ticker.C:
+			// Check if we need more peers
+			ts.connectionsMu.RLock()
+			activePeers := len(ts.Connections)
+			ts.connectionsMu.RUnlock()
+
+			ts.Logger.Info("Peer health check - Active peers: %d", activePeers)
+
+			// Request fresh peers from tracker
+			totalSize := uint64(ts.PieceManager.TotalSize())
+			response, err := torrentManager.Client.SendTrackerRequest(ts.TorrentFile, libnet.SendTrackerRequestParams{
+				TrackerAddress: *ts.TorrentFile.Data["announce"].StrVal,
+				PeerID:         string(torrentManager.Client.ID[:]),
+				Event:          "",
+				Port:           torrentManager.Client.Config.ListenPort,
+				Uploaded:       0,
+				Downloaded:     0,
+				Left:           totalSize,
+				Compact:        torrentManager.Client.Config.CompactMode,
+			})
+
+			if err != nil {
+				ts.Logger.Error("Failed to request peers from tracker: %v", err)
+				continue
+			}
+
+			// Extract and connect to new peers
+			peers, err := bencoding.ExtractPeersFromTrackerResponse(response)
+			if err != nil {
+				ts.Logger.Error("Failed to extract peers from tracker response: %v", err)
+				continue
+			}
+
+			ts.Logger.Info("Received %d peers from tracker", len(peers))
+
+			// ConnectToPeers will skip peers already in our map (fire and forget)
+			ts.ConnectToPeers(torrentManager.Client, peers)
+		}
+	}
+}
+
+// ConnectToPeers attempts to connect to a list of peers, perform handshakes, and receive bitfields.
+// Returns a channel that closes when all connection attempts complete (successful or failed).
+// Can be called multiple times to reconnect to failed peers or connect to new peers from tracker updates.
+func (ts *TorrentSession) ConnectToPeers(client *libnet.Client, peers []bencoding.PeerStruct) <-chan struct{} {
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+
+	ts.Logger.Info("Attempting to connect to %d peers...", len(peers))
+
+	for _, peer := range peers {
 		wg.Add(1)
 		go func(p bencoding.PeerStruct) {
 			defer wg.Done()
+
+			peerAddress := fmt.Sprintf("%s:%d", p.PeerAddress, p.PeerPort)
+
+			// Check if we already have this peer
+			ts.connectionsMu.RLock()
+			_, exists := ts.Connections[peerAddress]
+			ts.connectionsMu.RUnlock()
+
+			if exists {
+				// Peer already exists in map, skip
+				return
+			}
 
 			// Create peer connection in discovered state
 			pc := &libnet.PeerConnection{
 				Peer:         &p,
 				AmChoking:    true,
 				AmInterested: false,
-				RequestChan:  make(chan struct{}, session.Config.RequestPipelineSize),
+				RequestChan:  make(chan struct{}, ts.Config.RequestPipelineSize),
 			}
 			pc.SetStatus(libnet.StatusDiscovered)
 			pc.PeerChoking.Store(true)     // Assume peer is choking us initially
 			pc.PeerInterested.Store(false) // Assume peer is not interested initially
 
 			// Set connection address for logger (before creating logger)
-			pc.ConnectionAddress = fmt.Sprintf("%s:%d", p.PeerAddress, p.PeerPort)
+			pc.ConnectionAddress = peerAddress
 
 			// Create logger for this peer connection
-			pc.Logger = session.Logger.WithComponent(pc)
+			pc.Logger = ts.Logger.WithComponent(pc)
 
 			// Update status to connecting
 			pc.SetStatus(libnet.StatusConnecting)
@@ -354,7 +477,7 @@ func (ts *TorrentSession) InitiateDownloadSequence(torrentManager *TorrentManage
 				pc.SetStatus(libnet.StatusFailed)
 				pc.Error = err
 				pc.Logger.Error("Connection failed: %v", err)
-				session.AddConnection(pc)
+				ts.AddConnection(pc)
 				return
 			}
 
@@ -366,12 +489,12 @@ func (ts *TorrentSession) InitiateDownloadSequence(torrentManager *TorrentManage
 			// Attempt handshake
 			pc.SetStatus(libnet.StatusHandshaking)
 			pc.Logger.Info("Sending handshake...")
-			_, err = libnet.SendHandshakeToPeer(pc, t.Client.ID, torrentFile.InfoHash)
+			_, err = libnet.SendHandshakeToPeer(pc, client.ID, ts.TorrentFile.InfoHash)
 			if err != nil {
 				pc.SetStatus(libnet.StatusFailed)
 				pc.Error = err
 				pc.Logger.Error("Handshake failed: %v", err)
-				session.AddConnection(pc)
+				ts.AddConnection(pc)
 				return
 			}
 
@@ -383,7 +506,7 @@ func (ts *TorrentSession) InitiateDownloadSequence(torrentManager *TorrentManage
 				pc.SetStatus(libnet.StatusFailed)
 				pc.Error = fmt.Errorf("failed to read first message: %w", err)
 				pc.Logger.Error("Failed to read first message: %v", err)
-				session.AddConnection(pc)
+				ts.AddConnection(pc)
 				return
 			}
 
@@ -401,52 +524,17 @@ func (ts *TorrentSession) InitiateDownloadSequence(torrentManager *TorrentManage
 			}
 
 			// Store connection
-			session.AddConnection(pc)
+			ts.AddConnection(pc)
 		}(peer)
 	}
 
-	// Wait for all connection attempts to complete
-	session.Logger.Info("Waiting for %d peer connection attempts...", len(peers))
-	wg.Wait()
-
-	// Print summary
-	session.Logger.Info("Connection summary - Total: %d, Active: %d, Failed: %d",
-		len(session.Connections),
-		len(session.GetActivePeers()),
-		len(session.GetFailedPeers()))
-
-	// Check if we have any active peers
-	activePeers := session.GetActivePeers()
-	if len(activePeers) == 0 {
-		return fmt.Errorf("no active peers available - all connections failed")
-	}
-	// Start download loops for each active peer
-	for _, peer := range activePeers {
-		go session.PeerReadLoop(ctx, peer)
-		go session.PeerDownloadLoop(ctx, peer)
-	}
-
-	// Start completion monitor goroutine
+	// Close the done channel when all connections complete
 	go func() {
-		// Wait for torrent to complete or be cancelled (blocks until doneChan is closed)
-		<-session.doneChan
-
-		if session.doneErr != nil {
-			// Session was cancelled or failed
-			session.Logger.Info("Torrent session ended: %v", session.doneErr)
-			return
-		}
-
-		// All pieces acquired successfully - handle completion
-		err := session.Complete()
-		if err != nil {
-			session.Logger.Error("Error completing torrent: %v", err)
-		}
+		wg.Wait()
+		close(done)
 	}()
 
-	// @TODO : Start a loop that continuously requests / updates from the tracker, and
-	// attempts to re-connect to failed peers etc.
-	return nil
+	return done
 }
 
 // PeerDownloadLoop handles downloading pieces from a single peer.
@@ -458,6 +546,7 @@ func (ts *TorrentSession) PeerDownloadLoop(ctx context.Context, peer *libnet.Pee
 	if err := libnet.SendMessage(peer.Connection, interestedMsg); err != nil {
 		peer.Logger.Error("Failed to send INTERESTED: %v", err)
 		peer.SetStatus(libnet.StatusFailed)
+		ts.RemoveConnection(peer.ConnectionAddress)
 		return
 	}
 	peer.AmInterested = true
@@ -531,6 +620,7 @@ func (ts *TorrentSession) PeerDownloadLoop(ctx context.Context, peer *libnet.Pee
 				ts.PieceManager.UnmarkBlockPending(pieceIndex, blockIndex)
 				// Release the request slot
 				<-peer.RequestChan
+				ts.RemoveConnection(peer.ConnectionAddress)
 				return
 			}
 
@@ -582,28 +672,27 @@ func (ts *TorrentSession) Complete() error {
 func (ts *TorrentSession) AddConnection(c *libnet.PeerConnection) {
 	ts.connectionsMu.Lock()
 	defer ts.connectionsMu.Unlock()
-	ts.Connections = append(ts.Connections, c)
-
+	ts.Connections[c.ConnectionAddress] = c
 }
 
-// GetActivePeers returns all peers with active connections.
+// RemoveConnection removes a peer connection from the map.
+func (ts *TorrentSession) RemoveConnection(address string) {
+	ts.connectionsMu.Lock()
+	defer ts.connectionsMu.Unlock()
+	delete(ts.Connections, address)
+}
+
+// GetActivePeers returns all peers in the connections map that have an active TCP connection.
 func (ts *TorrentSession) GetActivePeers() []*libnet.PeerConnection {
+	ts.connectionsMu.RLock()
+	defer ts.connectionsMu.RUnlock()
+
 	var active []*libnet.PeerConnection
 	for _, pc := range ts.Connections {
-		if pc.GetStatus() == libnet.StatusActive {
+		// Only include peers that have completed the connection setup
+		if pc.Connection != nil {
 			active = append(active, pc)
 		}
 	}
 	return active
-}
-
-// GetFailedPeers returns all peers with failed connections.
-func (ts *TorrentSession) GetFailedPeers() []*libnet.PeerConnection {
-	var failed []*libnet.PeerConnection
-	for _, pc := range ts.Connections {
-		if pc.GetStatus() == libnet.StatusFailed {
-			failed = append(failed, pc)
-		}
-	}
-	return failed
 }

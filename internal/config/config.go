@@ -24,6 +24,7 @@ type Config struct {
 	TrackerTimeout         time.Duration
 	DownloadLoopInterval   time.Duration
 	CompletionPollInterval time.Duration
+	PeerHealthCheckInterval time.Duration
 
 	// Logging
 	LogLevel string
@@ -48,10 +49,11 @@ func DefaultConfig() *Config {
 		DiskWriteQueueSize:  100,
 
 		// Timeouts
-		PeerReadTimeout:        60 * time.Second,
-		TrackerTimeout:         30 * time.Second,
-		DownloadLoopInterval:   500 * time.Millisecond,
-		CompletionPollInterval: 1 * time.Second,
+		PeerReadTimeout:         60 * time.Second,
+		TrackerTimeout:          30 * time.Second,
+		DownloadLoopInterval:    500 * time.Millisecond,
+		CompletionPollInterval:  1 * time.Second,
+		PeerHealthCheckInterval: 5 * time.Minute,
 
 		// Logging
 		LogLevel: "info",
