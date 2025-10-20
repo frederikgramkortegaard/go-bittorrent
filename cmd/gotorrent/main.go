@@ -2,40 +2,40 @@ package main
 
 import (
 	"flag"
-	"fmt"
+	//	"fmt"
 	"go-bittorrent/internal/bencoding"
 	"go-bittorrent/internal/config"
 	"go-bittorrent/internal/daemon"
 	"go-bittorrent/internal/libnet"
 	"go-bittorrent/internal/logger"
-	"go-bittorrent/internal/tui"
+	//"go-bittorrent/internal/tui"
 	"os"
 )
 
 func main() {
-	// Redirect stdout/stderr to log file IMMEDIATELY before any logging
-	// This prevents logger output from interfering with the TUI
-	logFile, err := os.OpenFile("go-bittorrent.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to open log file: %v\n", err)
-		os.Exit(1)
-	}
-	defer logFile.Close()
-
-	// Save original stdout/stderr for TUI
-	origStdout := os.Stdout
-	origStderr := os.Stderr
-
-	// Redirect all output to log file
-	os.Stdout = logFile
-	os.Stderr = logFile
-
-	// Restore on exit
-	defer func() {
-		os.Stdout = origStdout
-		os.Stderr = origStderr
-	}()
-
+	//	// Redirect stdout/stderr to log file IMMEDIATELY before any logging
+	//	// This prevents logger output from interfering with the TUI
+	//	logFile, err := os.OpenFile("go-bittorrent.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	//	if err != nil {
+	//		fmt.Fprintf(os.Stderr, "Failed to open log file: %v\n", err)
+	//		os.Exit(1)
+	//	}
+	//	defer logFile.Close()
+	//
+	//	// Save original stdout/stderr for TUI
+	//	origStdout := os.Stdout
+	//	origStderr := os.Stderr
+	//
+	//	// Redirect all output to log file
+	//	os.Stdout = logFile
+	//	os.Stderr = logFile
+	//
+	//	// Restore on exit
+	//	defer func() {
+	//		os.Stdout = origStdout
+	//		os.Stderr = origStderr
+	//	}()
+	//
 	// Load configuration with defaults
 	cfg := config.DefaultConfig()
 
@@ -95,10 +95,26 @@ func main() {
 		}
 	}
 
+	isComplete := true
+	for {
+
+		for _, session := range torrentManager.Sessions {
+			for !session.PieceManager.IsComplete() {
+				isComplete = false
+			}
+		}
+
+		if isComplete {
+			break
+		}
+
+		isComplete = true
+	}
+
 	// Start the TUI with original stderr for output
 	// Logs are redirected to file, TUI gets clean terminal
-	if err := tui.RunTUI(torrentManager, cfg, origStderr, "go-bittorrent.log"); err != nil {
-		fmt.Fprintf(origStderr, "TUI error: %v\n", err)
-		os.Exit(1)
-	}
+	//	if err := tui.RunTUI(torrentManager, cfg, origStderr, "go-bittorrent.log"); err != nil {
+	//	fmt.Fprintf(origStderr, "TUI error: %v\n", err)
+	//	os.Exit(1)
+	//}
 }
