@@ -49,7 +49,7 @@ func DefaultConfig() *Config {
 		DiskWriteQueueSize:  100,
 
 		// Timeouts
-		PeerReadTimeout:         60 * time.Second,
+		PeerReadTimeout:         3 * time.Minute, // Must be > 2 minutes (BitTorrent keep-alive interval)
 		TrackerTimeout:          30 * time.Second,
 		DownloadLoopInterval:    500 * time.Millisecond,
 		CompletionPollInterval:  1 * time.Second,

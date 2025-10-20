@@ -324,12 +324,13 @@ func (ts *TorrentSession) InitiateDownloadSequence(torrentManager *TorrentManage
 	// Wait for all connection attempts to complete
 	<-connectDone
 
-	// Print summary
-	ts.Logger.Info("Connection summary - Active: %d",
-		len(ts.Connections))
-
 	// Check if we have any active peers
 	activePeers := ts.GetActivePeers()
+
+	// Print summary
+	ts.Logger.Info("Connection summary - Active: %d, Total attempts: %d",
+		len(activePeers), len(ts.Connections))
+
 	if len(activePeers) == 0 {
 		return fmt.Errorf("no active peers available - all connections failed")
 	}
