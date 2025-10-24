@@ -5,6 +5,7 @@ import (
 	"go-bittorrent/internal/bencoding"
 	"go-bittorrent/internal/logger"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -23,13 +24,14 @@ type PeerConnection struct {
 	Error  error        // Error that caused failure (if Status == StatusFailed)
 
 	// BitTorrent protocol state (using atomics for lock-free access)
-	AmChoking      bool        // This client is choking the peer
-	AmInterested   bool        // This client is interested in the peer
+	AmChoking      atomic.Bool // This client is choking the peer (atomic for concurrent access)
+	AmInterested   atomic.Bool // This client is interested in the peer (atomic for concurrent access)
 	PeerChoking    atomic.Bool // Peer is choking this client (atomic for read-heavy access)
 	PeerInterested atomic.Bool // Peer is interested in this client
 
-	// Piece availability
-	Bitfield []byte // Bitfield of pieces this peer has
+	// Piece availability (protected by mutex for concurrent updates via HAVE messages)
+	bitfieldMu sync.RWMutex
+	Bitfield   []byte // Bitfield of pieces this peer has
 
 	// Request pipelining (buffered channel for up to 5 concurrent requests)
 	RequestChan chan struct{}
@@ -71,8 +73,18 @@ func (pc *PeerConnection) SetStatus(status PeerConnectionStatus) {
 	pc.Status.Store(status)
 }
 
+// SetBitfield sets the peer's bitfield (thread-safe).
+func (pc *PeerConnection) SetBitfield(bitfield []byte) {
+	pc.bitfieldMu.Lock()
+	defer pc.bitfieldMu.Unlock()
+	pc.Bitfield = bitfield
+}
+
 // HasPiece checks if the peer has a specific piece based on their bitfield.
 func (pc *PeerConnection) HasPiece(pieceIndex int) bool {
+	pc.bitfieldMu.RLock()
+	defer pc.bitfieldMu.RUnlock()
+
 	if pc.Bitfield == nil {
 		return false
 	}

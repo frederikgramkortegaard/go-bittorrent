@@ -458,12 +458,12 @@ func (ts *TorrentSession) ConnectToPeers(client *libnet.Client, peers []bencodin
 
 			// Create peer connection in discovered state
 			pc := &libnet.PeerConnection{
-				Peer:         &p,
-				AmChoking:    true,
-				AmInterested: false,
-				RequestChan:  make(chan struct{}, ts.Config.RequestPipelineSize),
+				Peer:        &p,
+				RequestChan: make(chan struct{}, ts.Config.RequestPipelineSize),
 			}
 			pc.SetStatus(libnet.StatusDiscovered)
+			pc.AmChoking.Store(true)       // This client is choking the peer initially
+			pc.AmInterested.Store(false)   // This client is not interested initially
 			pc.PeerChoking.Store(true)     // Assume peer is choking us initially
 			pc.PeerInterested.Store(false) // Assume peer is not interested initially
 
@@ -516,7 +516,7 @@ func (ts *TorrentSession) ConnectToPeers(client *libnet.Client, peers []bencodin
 
 			// Handle the message
 			if msg.ID != nil && *msg.ID == libnet.MsgBitfield {
-				pc.Bitfield = msg.Payload
+				pc.SetBitfield(msg.Payload)
 				pc.Logger.Info("Received bitfield (%d bytes)", len(msg.Payload))
 				pc.SetStatus(libnet.StatusActive)
 			} else if msg.ID == nil {
@@ -553,7 +553,7 @@ func (ts *TorrentSession) PeerDownloadLoop(ctx context.Context, peer *libnet.Pee
 		ts.RemoveConnection(peer.ConnectionAddress)
 		return
 	}
-	peer.AmInterested = true
+	peer.AmInterested.Store(true)
 	peer.Logger.Debug("Sent INTERESTED message")
 
 	ticker := time.NewTicker(ts.Config.DownloadLoopInterval)
