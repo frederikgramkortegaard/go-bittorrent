@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"go-bittorrent/internal"
 	"go-bittorrent/internal/bencoding"
 	"go-bittorrent/internal/config"
 	"go-bittorrent/internal/libnet"
@@ -68,7 +67,7 @@ func NewTorrentSession(torrentFile bencoding.TorrentFile, cfg *config.Config) (*
 	session := &TorrentSession{
 		TorrentFile: torrentFile,
 		Connections: make(map[string]*libnet.PeerConnection),
-		PieceManager: internal.NewPieceManager(
+		PieceManager: NewPieceManager(
 			pieceInfo.TotalPieces,
 			pieceInfo.PieceLength,
 			pieceInfo.LastPieceLength,
@@ -155,7 +154,7 @@ func (t *TorrentManager) StartTorrentSession(torrentFile bencoding.TorrentFile) 
 type TorrentSession struct {
 	TorrentFile   bencoding.TorrentFile
 	Connections   map[string]*libnet.PeerConnection // Map of peer address -> connection
-	PieceManager  *internal.PieceManager
+	PieceManager  *PieceManager
 	DiskManager   *DiskManager
 	Config        *config.Config
 	connectionsMu sync.RWMutex
@@ -604,7 +603,7 @@ func (ts *TorrentSession) PeerDownloadLoop(ctx context.Context, peer *libnet.Pee
 			// Now select piece/block (after we have the slot)
 
 			// Select next piece to download from this peer
-			pieceIndex, ok := internal.SelectNextPiece(ts.PieceManager, peer)
+			pieceIndex, ok := SelectNextPiece(ts.PieceManager, peer)
 			if !ok {
 				// No pieces available, release the slot and wait
 				<-peer.RequestChan
@@ -620,7 +619,7 @@ func (ts *TorrentSession) PeerDownloadLoop(ctx context.Context, peer *libnet.Pee
 			ts.PieceManager.InitializePiece(pieceIndex, ts.PieceManager.BlockSize)
 
 			// Get next block to request from this piece
-			blockIndex, begin, length, ok := internal.GetNextBlockToRequest(ts.PieceManager, pieceIndex)
+			blockIndex, begin, length, ok := GetNextBlockToRequest(ts.PieceManager, pieceIndex)
 			if !ok {
 				// No blocks available in this piece, release slot and try next piece
 				<-peer.RequestChan

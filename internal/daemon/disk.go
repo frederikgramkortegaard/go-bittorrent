@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"fmt"
-	"go-bittorrent/internal"
 	"go-bittorrent/internal/bencoding"
 	"go-bittorrent/internal/config"
 	"os"
@@ -264,7 +263,7 @@ func (dm *DiskManager) ReadPiece(index int) ([]byte, error) {
 
 // WriteToDisk writes all pieces to disk at once using the writeQueue.
 // This queues all pieces for writing by the async worker.
-func (dm *DiskManager) WriteToDisk(pm *internal.PieceManager) error {
+func (dm *DiskManager) WriteToDisk(pm *PieceManager) error {
 	// Queue all pieces for writing
 	for i := 0; i < pm.TotalPieces; i++ {
 		data := pm.GetPieceData(i)
