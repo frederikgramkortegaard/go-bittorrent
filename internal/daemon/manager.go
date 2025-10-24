@@ -56,6 +56,44 @@ func (t *TorrentManager) AllSessionsComplete() bool {
 	return true
 }
 
+// WaitForCompletion blocks until all torrent sessions have completed.
+// Uses channels to wait efficiently (no busy-waiting).
+func (t *TorrentManager) WaitForCompletion() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		// Check if all complete
+		if t.AllSessionsComplete() {
+			return
+		}
+
+		// Get a done channel to wait on
+		t.sessionsMu.RLock()
+		var waitChan <-chan struct{}
+		for _, session := range t.Sessions {
+			if session.doneChan != nil && !session.PieceManager.IsComplete() {
+				waitChan = session.doneChan
+				break
+			}
+		}
+		t.sessionsMu.RUnlock()
+
+		// If we found a channel, wait on it (or timeout)
+		if waitChan != nil {
+			select {
+			case <-waitChan:
+				// A session completed, loop again to check others
+			case <-ticker.C:
+				// Periodic check in case of race
+			}
+		} else {
+			// No active downloads, just wait a bit
+			<-ticker.C
+		}
+	}
+}
+
 // NewTorrentSession creates a new torrent session.
 func NewTorrentSession(torrentFile bencoding.TorrentFile, cfg *config.Config) (*TorrentSession, error) {
 	// Extract piece information from torrent file

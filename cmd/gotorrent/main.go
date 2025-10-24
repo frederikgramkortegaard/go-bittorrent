@@ -73,12 +73,7 @@ func main() {
 		}
 	}
 
-	// Wait for all torrents to complete
-	for {
-		allComplete := torrentManager.AllSessionsComplete()
-		if allComplete {
-			break
-		}
-	}
+	// Wait for all torrents to complete (blocks efficiently using channels)
+	torrentManager.WaitForCompletion()
 
 }
