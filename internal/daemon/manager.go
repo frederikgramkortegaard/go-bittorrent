@@ -154,9 +154,10 @@ type TorrentSession struct {
 	cancel context.CancelFunc
 
 	// Channel closed when torrent completes (all pieces acquired) or is cancelled (broadcasts to all waiters)
-	doneChan chan struct{}
-	doneOnce sync.Once // Ensures doneChan is only closed once
-	doneErr  error     // Error if cancelled/failed, nil if successful completion
+	doneChan     chan struct{}
+	doneMu       sync.Mutex // Protects doneChan closing and doneSignaled flag
+	doneSignaled bool       // True if doneChan has been closed
+	doneErr      error      // Error if cancelled/failed, nil if successful completion
 
 	// Meta
 	IsSeedMature bool
@@ -274,20 +275,29 @@ func (ts *TorrentSession) PeerReadLoop(ctx context.Context, peer *libnet.PeerCon
 }
 
 func (ts *TorrentSession) InitiateDownloadSequence(torrentManager *TorrentManager, ctx context.Context) error {
-	// Check if download sequence already in progress
+	// Check if download sequence already in progress (must check doneChan state under lock)
+	ts.doneMu.Lock()
 	if ts.doneChan == nil {
 		// First time - create the channel
 		ts.Logger.Info("Initiating first download sequence")
 		ts.doneChan = make(chan struct{})
+		ts.doneSignaled = false
+		ts.doneMu.Unlock()
 	} else {
-		// Not first time - check if previous download is still in progress
+		// Not first time - need to check if previous download is still in progress
+		// Must unlock before selecting on channel (to avoid deadlock)
+		doneChan := ts.doneChan
+		ts.doneMu.Unlock()
+
 		select {
-		case <-ts.doneChan:
+		case <-doneChan:
 			// Channel is closed (download completed/cancelled), reset for new sequence
 			ts.Logger.Info("Resetting download sequence after previous completion")
+			ts.doneMu.Lock()
 			ts.doneChan = make(chan struct{})
-			ts.doneOnce = sync.Once{}
+			ts.doneSignaled = false
 			ts.doneErr = nil
+			ts.doneMu.Unlock()
 		default:
 			// Channel is still open, download already in progress
 			ts.Logger.Info("Download sequence already in progress, rejecting duplicate initiation")
@@ -646,10 +656,13 @@ func (ts *TorrentSession) Cancel() {
 	ts.StopPeerLoops()
 
 	// Signal cancellation via doneChan
-	ts.doneOnce.Do(func() {
+	ts.doneMu.Lock()
+	if !ts.doneSignaled {
 		ts.doneErr = fmt.Errorf("cancelled")
 		close(ts.doneChan)
-	})
+		ts.doneSignaled = true
+	}
+	ts.doneMu.Unlock()
 }
 
 // Complete handles torrent completion - stops peer connections, marks ready for seeding,
@@ -664,10 +677,12 @@ func (ts *TorrentSession) Complete() error {
 	ts.IsSeedMature = true // Mark as ready to seed
 
 	// Signal successful completion via doneChan (doneErr stays nil)
-	ts.doneOnce.Do(func() {
-		ts.doneErr = nil
+	ts.doneMu.Lock()
+	if !ts.doneSignaled {
 		close(ts.doneChan)
-	})
+		ts.doneSignaled = true
+	}
+	ts.doneMu.Unlock()
 
 	return nil
 }
