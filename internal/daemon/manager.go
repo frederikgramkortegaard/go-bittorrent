@@ -179,18 +179,17 @@ func (ts *TorrentSession) PeerReadLoop(ctx context.Context, peer *libnet.PeerCon
 	peer.Connection.SetReadDeadline(time.Now().Add(ts.Config.PeerReadTimeout))
 
 	for {
-		select {
-		case <-ctx.Done():
-			peer.Logger.Debug("Read loop shutting down")
-			return
-		default:
-		}
-
 		msg, err := libnet.ReadMessage(peer.Connection)
 		if err != nil {
-			peer.Logger.Error("Failed to read message: %v", err)
-			peer.SetStatus(libnet.StatusFailed)
-			ts.RemoveConnection(peer.ConnectionAddress)
+			// Check if we're shutting down vs actual error
+			select {
+			case <-ctx.Done():
+				peer.Logger.Debug("Read loop shutting down")
+			default:
+				peer.Logger.Error("Failed to read message: %v", err)
+				peer.SetStatus(libnet.StatusFailed)
+				ts.RemoveConnection(peer.ConnectionAddress)
+			}
 			return
 		}
 
