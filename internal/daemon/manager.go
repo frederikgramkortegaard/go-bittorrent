@@ -11,6 +11,7 @@ import (
 	"go-bittorrent/internal/config"
 	"go-bittorrent/internal/libnet"
 	"go-bittorrent/internal/logger"
+	"math/bits"
 	"sync"
 	"time"
 )
@@ -96,22 +97,34 @@ func (t *TorrentManager) StartTorrentSession(torrentFile bencoding.TorrentFile) 
 	session.ctx = ctx
 	session.cancel = cancel
 
-	//
+	// We have at least a single fully completed and verified piece of this torrent on-disk
+	session.IsSeedMature = torrentFile.Bitfield != nil
 
-	isSeedMature := false       // We have at least a single fully completed and verified piece of this torrent on-disk
-	shouldBeDownloaded := true // We're missing at least a single block of the data on-disk
+	// Calculate piece availability
+	// @NOTE : If the files on disk have been deleted, this could be incorrect
+	// because of this, when we on program start go through our dotfolder and find every
+	// torrentfile, we could/should possible do some validation of the data on-disk,
+	pieceInfo, err := bencoding.ExtractPieceInfo(torrentFile)
+	if err != nil {
+		return nil, errors.New("could not extract pieceInfo from torrentFile")
+	}
 
-	session.IsSeedMature = isSeedMature
+	if len(torrentFile.Bitfield) != pieceInfo.TotalPieces {
+		return nil, errors.New("length of bitfield is not the same as the expected length of pieces in pieceInfo")
+	}
 
-	// Only relevant for downloading
-	if shouldBeDownloaded {
+	// Calculate how many pieces we already have and that are fully available
+	setBits := 0
+	for _, b := range torrentFile.Bitfield {
+		setBits += bits.OnesCount8(b)
+	}
+
+	// Initiate donwload if required
+	if torrentFile.Bitfield == nil || setBits < pieceInfo.TotalPieces {
 		if _, ok := torrentFile.Data["announce"]; !ok {
 			return session, errors.New("no annouce field in torrentfile")
 		}
 
-		// @NOTE : Technically this, depending on implementation, doesn't pick off where it left off
-		// if we managed to download any more than 0.0% meaning any of the file, we should make that
-		// work better
 		err = session.InitiateDownloadSequence(t, ctx)
 		if err != nil {
 			return session, err
@@ -283,7 +296,6 @@ func (ts *TorrentSession) InitiateDownloadSequence(torrentManager *TorrentManage
 			return fmt.Errorf("download sequence already in progress for this torrent")
 		}
 	}
-
 
 	// Calculate total size for tracker request
 	totalSize := uint64(ts.PieceManager.TotalSize())

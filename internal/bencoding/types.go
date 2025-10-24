@@ -3,6 +3,7 @@ package bencoding
 import (
 	"fmt"
 )
+
 // BenType represents the type of a bencoded object
 type BenType string
 
@@ -19,11 +20,11 @@ const (
 // small the self-documentation, compile-time type-checking, and very clear definition of this
 // approach is what we're going to prefer
 type BencodedObject struct {
-	Typ    BenType
-	IntVal *int64
-	StrVal *string
-	List   []BencodedObject
-	Dict   map[string]BencodedObject
+	Typ    BenType                   `json:"type"`
+	IntVal *int64                    `json:"int_val,omitempty"`
+	StrVal *string                   `json:"str_val,omitempty"`
+	List   []BencodedObject          `json:"list,omitempty"`
+	Dict   map[string]BencodedObject `json:"dict,omitempty"`
 }
 
 // FileMode represents whether a torrent contains a single file or multiple files
@@ -36,10 +37,13 @@ const (
 
 // TorrentFile represents a parsed .torrent file
 type TorrentFile struct {
-	Data      map[string]BencodedObject
-	TFileMode FileMode
-	InfoBytes []byte   // Raw bencoded bytes of the info dict
-	InfoHash  [20]byte // SHA1 hash of InfoBytes
+	Data      map[string]BencodedObject `json:"data"`
+	TFileMode FileMode                  `json:"file_mode"`
+	InfoBytes []byte                    `json:"info_bytes"` // Raw bencoded bytes of the info dict
+	InfoHash  [20]byte                  `json:"info_hash"`  // SHA1 hash of InfoBytes
+
+	// Meta
+	Bitfield []byte 										`json:"bitfield"` // Used to quickly determine seed mature and missing pieces for existing torrents on-disk
 }
 
 // PeerStruct represents a peer from a tracker response

@@ -6,6 +6,7 @@ import "time"
 type Config struct {
 	// Paths
 	OutputDir string
+	DotfolderPath string
 
 	// Network
 	ListenPort int
@@ -35,6 +36,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		// Paths
 		OutputDir: ".",
+		DotfolderPath: ".go-bittorrent",
 
 		// Network
 		ListenPort: 6881,
@@ -53,7 +55,7 @@ func DefaultConfig() *Config {
 		TrackerTimeout:          30 * time.Second,
 		DownloadLoopInterval:    500 * time.Millisecond,
 		CompletionPollInterval:  1 * time.Second,
-		PeerHealthCheckInterval: 5 * time.Minute,
+		PeerHealthCheckInterval: 2 * time.Minute,
 
 		// Logging
 		LogLevel: "info",
