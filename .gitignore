@@ -31,5 +31,8 @@ vendor/
 *.swo
 *~
 
+examples/*
+
 # Environment variables
 .env
+
