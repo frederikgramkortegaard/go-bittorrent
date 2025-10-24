@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"go-bittorrent/internal"
 	"go-bittorrent/internal/bencoding"
@@ -81,7 +80,7 @@ func NewTorrentSession(torrentFile bencoding.TorrentFile, cfg *config.Config) (*
 func (t *TorrentManager) StartTorrentSession(torrentFile bencoding.TorrentFile) (*TorrentSession, error) {
 
 	if torrentFile.Data == nil {
-		return nil, errors.New("torrentfile has no data field")
+		return nil, ErrNoDataField
 	}
 
 	session, err := NewTorrentSession(torrentFile, t.Client.Config)
@@ -106,11 +105,11 @@ func (t *TorrentManager) StartTorrentSession(torrentFile bencoding.TorrentFile) 
 	// torrentfile, we could/should possible do some validation of the data on-disk,
 	pieceInfo, err := bencoding.ExtractPieceInfo(torrentFile)
 	if err != nil {
-		return nil, errors.New("could not extract pieceInfo from torrentFile")
+		return nil, ErrNoPieceInfo
 	}
 
 	if len(torrentFile.Bitfield) != pieceInfo.TotalPieces {
-		return nil, errors.New("length of bitfield is not the same as the expected length of pieces in pieceInfo")
+		return nil, ErrBitfieldLengthMismatch
 	}
 
 	// Calculate how many pieces we already have and that are fully available
@@ -122,7 +121,7 @@ func (t *TorrentManager) StartTorrentSession(torrentFile bencoding.TorrentFile) 
 	// Initiate donwload if required
 	if torrentFile.Bitfield == nil || setBits < pieceInfo.TotalPieces {
 		if _, ok := torrentFile.Data["announce"]; !ok {
-			return session, errors.New("no annouce field in torrentfile")
+			return session, ErrNoAnnounceField
 		}
 
 		err = session.InitiateDownloadSequence(t, ctx)
@@ -293,7 +292,7 @@ func (ts *TorrentSession) InitiateDownloadSequence(torrentManager *TorrentManage
 		default:
 			// Channel is still open, download already in progress
 			ts.Logger.Info("Download sequence already in progress, rejecting duplicate initiation")
-			return fmt.Errorf("download sequence already in progress for this torrent")
+			return ErrDownloadAlreadyInProgress
 		}
 	}
 
@@ -344,7 +343,7 @@ func (ts *TorrentSession) InitiateDownloadSequence(torrentManager *TorrentManage
 		len(activePeers), len(ts.Connections))
 
 	if len(activePeers) == 0 {
-		return fmt.Errorf("no active peers available - all connections failed")
+		return ErrNoActivePeers
 	}
 	// Start download loops for each active peer
 	for _, peer := range activePeers {

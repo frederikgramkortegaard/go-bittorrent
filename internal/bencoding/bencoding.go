@@ -1,7 +1,6 @@
 package bencoding
 
 import (
-	"errors"
 	"strconv"
 	"strings"
 )
@@ -10,13 +9,13 @@ import (
 func ParseString(data string) (string, string, error) {
 	colonIndex := strings.IndexByte(data, ':')
 	if colonIndex == -1 {
-		return "", "", errors.New("no colon found in bencoded string")
+		return "", "", ErrNoColonInString
 	}
 
 	// Validate all characters before colon are ASCII digits
 	for i := range colonIndex {
 		if data[i] < '0' || data[i] > '9' {
-			return "", "", errors.New("expected ASCII digit in length")
+			return "", "", ErrNonDigitInLength
 		}
 	}
 
@@ -30,7 +29,7 @@ func ParseString(data string) (string, string, error) {
 	start := colonIndex + 1
 	end := start + size
 	if end > len(data) {
-		return "", "", errors.New("string length exceeds data bounds")
+		return "", "", ErrStringLengthExceeds
 	}
 
 	// Return a copy of the string and remaining data
@@ -39,28 +38,28 @@ func ParseString(data string) (string, string, error) {
 
 func ParseInteger(data string) (int64, string, error) {
 	if len(data) < 3 {
-		return 0, "", errors.New("data is too short to represent a bencoded integer")
+		return 0, "", ErrIntegerTooShort
 	}
 
 	if data[0] != 'i' {
-		return 0, "", errors.New("bencoded integer does not start with 'i'")
+		return 0, "", ErrIntegerNoStartMarker
 	}
 
 	eIndex := strings.IndexByte(data, 'e')
 	if eIndex == -1 {
-		return 0, "", errors.New("no 'e' terminator found")
+		return 0, "", ErrIntegerNoEndMarker
 	}
 
 	numStr := data[1:eIndex]
 
 	// Validate no leading zeros (except for "0" itself)
 	if len(numStr) > 1 && numStr[0] == '0' {
-		return 0, "", errors.New("leading zeros not allowed")
+		return 0, "", ErrIntegerLeadingZeros
 	}
 
 	// Validate no negative zero
 	if numStr == "-0" {
-		return 0, "", errors.New("negative zero not allowed")
+		return 0, "", ErrIntegerNegativeZero
 	}
 
 	i, err := strconv.ParseInt(numStr, 10, 64)
@@ -74,7 +73,7 @@ func ParseInteger(data string) (int64, string, error) {
 // ParseBencodedObject parses any bencoded value (string, integer, list, or dict) from the input data.
 func ParseBencodedObject(data string) (BencodedObject, string, error) {
 	if len(data) == 0 {
-		return BencodedObject{}, "", errors.New("empty data")
+		return BencodedObject{}, "", ErrEmptyData
 	}
 
 	var err error
@@ -128,11 +127,11 @@ func ParseBencodedObject(data string) (BencodedObject, string, error) {
 // ParseList recursively parses a Bencoded list of objects from a given string
 func ParseList(data string) ([]BencodedObject, string, error) {
 	if len(data) < 2 {
-		return nil, "", errors.New("data is not long enough to contain a list")
+		return nil, "", ErrListTooShort
 	}
 
 	if data[0] != 'l' {
-		return nil, "", errors.New("improperly formatted list, does not start with 'l'")
+		return nil, "", ErrListNoStartMarker
 	}
 
 	list := make([]BencodedObject, 0)
@@ -151,17 +150,17 @@ func ParseList(data string) ([]BencodedObject, string, error) {
 		list = append(list, obj)
 		data = remaining
 	}
-	return nil, "", errors.New("list not terminated with 'e'")
+	return nil, "", ErrListNoEndMarker
 }
 
 // ParseDict recursively parses a Bencoded dict of objects from a string
 func ParseDict(data string) (map[string]BencodedObject, string, error) {
 	if len(data) < 2 {
-		return nil, "", errors.New("data is not long enough to contain a dict")
+		return nil, "", ErrDictTooShort
 	}
 
 	if data[0] != 'd' {
-		return nil, "", errors.New("improperly formatted dict, does not start with 'd'")
+		return nil, "", ErrDictNoStartMarker
 	}
 
 	dict := make(map[string]BencodedObject)
@@ -189,7 +188,7 @@ func ParseDict(data string) (map[string]BencodedObject, string, error) {
 		data = remaining
 	}
 
-	return nil, "", errors.New("dict not terminated with 'e'")
+	return nil, "", ErrDictNoEndMarker
 
 }
 
@@ -197,14 +196,14 @@ func ParseDict(data string) (map[string]BencodedObject, string, error) {
 // from a torrent metainfo file. This is needed to calculate the info hash.
 func ExtractInfoDictBytes(data string) ([]byte, error) {
 	if len(data) < 2 || data[0] != 'd' {
-		return nil, errors.New("not a dict")
+		return nil, ErrNotADict
 	}
 
 	pos := 1 // skip 'd'
 
 	for pos < len(data) {
 		if data[pos] == 'e' {
-			return nil, errors.New("no info key found")
+			return nil, ErrInfoKeyNotFound
 		}
 
 		// Parse the key
@@ -244,6 +243,6 @@ func ExtractInfoDictBytes(data string) ([]byte, error) {
 		pos += valueLen
 	}
 
-	return nil, errors.New("info key not found")
+	return nil, ErrInfoKeyNotFound
 
 }

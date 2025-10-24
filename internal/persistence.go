@@ -28,7 +28,7 @@ func StoreTorrentFileInDotfolder(torrentFile bencoding.TorrentFile, cfg *config.
 
 	if _, err := os.Stat(savepath); !errors.Is(err, os.ErrNotExist) {
 		// File already exists
-		return errors.New("file already exists")
+		return ErrFileAlreadyExists
 	}
 
 	data, err := json.MarshalIndent(torrentFile, "", "  ")

@@ -55,7 +55,7 @@ func ExtractPeersFromTrackerResponse(data map[string]BencodedObject) ([]PeerStru
 	peers := make([]PeerStruct, 0)
 
 	if _, ok := data["peers"]; !ok {
-		return nil, errors.New("peers not found in data")
+		return nil, ErrPeersNotFound
 	}
 
 	// Check if peers is in compact binary format (StrVal) or list format
@@ -63,7 +63,7 @@ func ExtractPeersFromTrackerResponse(data map[string]BencodedObject) ([]PeerStru
 		// Compact binary format: each peer is 6 bytes (4 bytes IP + 2 bytes port)
 		peerData := *data["peers"].StrVal
 		if len(peerData)%6 != 0 {
-			return nil, errors.New("invalid compact peer data length (must be multiple of 6)")
+			return nil, ErrInvalidCompactPeerLen
 		}
 
 		for i := 0; i < len(peerData); i += 6 {
@@ -89,7 +89,7 @@ func ExtractPeersFromTrackerResponse(data map[string]BencodedObject) ([]PeerStru
 
 	// Dictionary list format (non-compact)
 	if data["peers"].List == nil {
-		return nil, errors.New("list of peers has no bencoded list element")
+		return nil, ErrPeersNotList
 	}
 
 	for _, elem := range data["peers"].List {
@@ -140,7 +140,7 @@ func ExtractPieceInfo(torrent TorrentFile) (PieceInfo, error) {
 	// Get piece length
 	pieceLength, ok := torrent.Data["info"].Dict["piece length"]
 	if !ok || pieceLength.IntVal == nil {
-		return info, errors.New("piece length not found in torrent file")
+		return info, ErrPieceLengthNotFound
 	}
 	info.PieceLength = int32(*pieceLength.IntVal)
 
