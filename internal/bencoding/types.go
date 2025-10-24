@@ -1,6 +1,8 @@
 package bencoding
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 )
 
@@ -22,9 +24,61 @@ const (
 type BencodedObject struct {
 	Typ    BenType                   `json:"type"`
 	IntVal *int64                    `json:"int_val,omitempty"`
-	StrVal *string                   `json:"str_val,omitempty"`
+	StrVal *string                   `json:"-"` // Custom marshaling to handle binary data
 	List   []BencodedObject          `json:"list,omitempty"`
 	Dict   map[string]BencodedObject `json:"dict,omitempty"`
+}
+
+// bencodedObjectJSON is used for custom JSON marshaling to handle binary strings
+type bencodedObjectJSON struct {
+	Typ       BenType                   `json:"type"`
+	IntVal    *int64                    `json:"int_val,omitempty"`
+	StrValB64 *string                   `json:"str_val_b64,omitempty"` // Base64-encoded binary data
+	List      []BencodedObject          `json:"list,omitempty"`
+	Dict      map[string]BencodedObject `json:"dict,omitempty"`
+}
+
+// MarshalJSON custom marshals BencodedObject, encoding binary strings as base64
+func (b BencodedObject) MarshalJSON() ([]byte, error) {
+	obj := bencodedObjectJSON{
+		Typ:    b.Typ,
+		IntVal: b.IntVal,
+		List:   b.List,
+		Dict:   b.Dict,
+	}
+
+	if b.StrVal != nil {
+		// Base64 encode the string to preserve binary data
+		encoded := base64.StdEncoding.EncodeToString([]byte(*b.StrVal))
+		obj.StrValB64 = &encoded
+	}
+
+	return json.Marshal(obj)
+}
+
+// UnmarshalJSON custom unmarshals BencodedObject, decoding base64 strings
+func (b *BencodedObject) UnmarshalJSON(data []byte) error {
+	var obj bencodedObjectJSON
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return err
+	}
+
+	b.Typ = obj.Typ
+	b.IntVal = obj.IntVal
+	b.List = obj.List
+	b.Dict = obj.Dict
+
+	if obj.StrValB64 != nil {
+		// Base64 decode the string to restore binary data
+		decoded, err := base64.StdEncoding.DecodeString(*obj.StrValB64)
+		if err != nil {
+			return err
+		}
+		str := string(decoded)
+		b.StrVal = &str
+	}
+
+	return nil
 }
 
 // FileMode represents whether a torrent contains a single file or multiple files

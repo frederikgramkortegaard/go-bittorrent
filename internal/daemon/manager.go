@@ -16,9 +16,9 @@ import (
 
 // TorrentManager manages all active torrent sessions for the application.
 type TorrentManager struct {
-	Sessions   map[[20]byte]*TorrentSession
-	sessionsMu sync.RWMutex   // Protects Sessions map
-	Client     *libnet.Client // Shared client for all torrents
+	Sessions   map[[20]byte]*TorrentSession // Maps the InfoHash of a TorrentFile to it's current TorrentSession
+	sessionsMu sync.RWMutex                 // Protects Sessions map
+	Client     *libnet.Client               // Shared client for all torrents
 }
 
 // NewTorrentManager creates a new TorrentManager with a shared client.
@@ -148,9 +148,6 @@ func (t *TorrentManager) StartTorrentSession(torrentFile bencoding.TorrentFile) 
 	session.ctx = ctx
 	session.cancel = cancel
 
-	// We have at least a single fully completed and verified piece of this torrent on-disk
-	session.IsSeedMature = torrentFile.Bitfield != nil
-
 	// Calculate piece availability
 	// @NOTE : If the files on disk have been deleted, this could be incorrect
 	// because of this, when we on program start go through our dotfolder and find every
@@ -160,17 +157,22 @@ func (t *TorrentManager) StartTorrentSession(torrentFile bencoding.TorrentFile) 
 		return nil, ErrNoPieceInfo
 	}
 
-	if len(torrentFile.Bitfield) != pieceInfo.TotalPieces {
+	if torrentFile.Bitfield != nil && len(torrentFile.Bitfield) != pieceInfo.TotalPieces {
 		return nil, ErrBitfieldLengthMismatch
 	}
 
 	// Calculate how many pieces we already have and that are fully available
 	setBits := 0
-	for _, b := range torrentFile.Bitfield {
-		setBits += bits.OnesCount8(b)
+	if torrentFile.Bitfield != nil {
+		for _, b := range torrentFile.Bitfield {
+			setBits += bits.OnesCount8(b)
+		}
 	}
 
-	// Initiate donwload if required
+	// We have at least a single fully completed and verified piece of this torrent on-disk
+	session.IsSeedMature = torrentFile.Bitfield != nil && setBits > 0
+
+	// Initiate download if required
 	if torrentFile.Bitfield == nil || setBits < pieceInfo.TotalPieces {
 		if _, ok := torrentFile.Data["announce"]; !ok {
 			return session, ErrNoAnnounceField
@@ -181,6 +183,7 @@ func (t *TorrentManager) StartTorrentSession(torrentFile bencoding.TorrentFile) 
 			return session, err
 		}
 	}
+	// Note: If already have all pieces, no download needed - session is ready for seeding
 
 	// @NOTE : If we don't already have all of the torrent, we setup a download loop, it is not
 	// required for us to setup a loop for seeding, as since this session now exists in-memory, the
@@ -205,9 +208,9 @@ type TorrentSession struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	// Channel closed when torrent completes (all pieces acquired) or is cancelled (broadcasts to all waiters)
+	// Channel-based completion signaling (for synchronization/waiting)
 	doneChan     chan struct{}
-	doneMu       sync.Mutex // Protects doneChan closing and doneSignaled flag
+	doneMu       sync.Mutex // Protects doneChan, doneSignaled, and doneErr
 	doneSignaled bool       // True if doneChan has been closed
 	doneErr      error      // Error if cancelled/failed, nil if successful completion
 
@@ -327,35 +330,19 @@ func (ts *TorrentSession) PeerReadLoop(ctx context.Context, peer *libnet.PeerCon
 }
 
 func (ts *TorrentSession) InitiateDownloadSequence(torrentManager *TorrentManager, ctx context.Context) error {
-	// Check if download sequence already in progress (must check doneChan state under lock)
+	// Check if a download is already active
 	ts.doneMu.Lock()
-	if ts.doneChan == nil {
-		// First time - create the channel
-		ts.Logger.Info("Initiating first download sequence")
-		ts.doneChan = make(chan struct{})
-		ts.doneSignaled = false
+	if ts.doneChan != nil && !ts.doneSignaled {
+		// Download already in progress
 		ts.doneMu.Unlock()
-	} else {
-		// Not first time - need to check if previous download is still in progress
-		// Must unlock before selecting on channel (to avoid deadlock)
-		doneChan := ts.doneChan
-		ts.doneMu.Unlock()
-
-		select {
-		case <-doneChan:
-			// Channel is closed (download completed/cancelled), reset for new sequence
-			ts.Logger.Info("Resetting download sequence after previous completion")
-			ts.doneMu.Lock()
-			ts.doneChan = make(chan struct{})
-			ts.doneSignaled = false
-			ts.doneErr = nil
-			ts.doneMu.Unlock()
-		default:
-			// Channel is still open, download already in progress
-			ts.Logger.Info("Download sequence already in progress, rejecting duplicate initiation")
-			return ErrDownloadAlreadyInProgress
-		}
+		return ErrDownloadAlreadyInProgress
 	}
+
+	// Start new download sequence (create/reset doneChan)
+	ts.doneChan = make(chan struct{})
+	ts.doneSignaled = false
+	ts.doneErr = nil
+	ts.doneMu.Unlock()
 
 	// Start write worker for this download sequence
 	ts.DiskManager.StartWriteWorker()
@@ -726,7 +713,6 @@ func (ts *TorrentSession) Cancel() {
 func (ts *TorrentSession) Complete() error {
 	ts.Logger.Info("Torrent complete, all %d pieces acquired", ts.PieceManager.CompletedPieces())
 
-	// Stop all peer read/download loops
 	ts.StopPeerLoops()
 
 	// Stop write worker (but keep DiskManager alive for seeding/reads)

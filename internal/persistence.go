@@ -20,6 +20,13 @@ func TorrentFileExistsInDotfolder(torrentFile bencoding.TorrentFile, cfg *config
 
 }
 func StoreTorrentFileInDotfolder(torrentFile bencoding.TorrentFile, cfg *config.Config) error {
+
+	// Ensure that the dotfolder exists
+	err := os.MkdirAll(cfg.DotfolderPath, os.ModePerm)
+	if err != nil {
+		return errors.New("failed to create dotfolder")
+	}
+
 	// We use the infoHash as the filename, but since stringified raw bytes are not safe
 	// as a path/filename, we convert it to base64 first.
 	byteArray := []byte(torrentFile.InfoHash[:])
@@ -38,13 +45,10 @@ func StoreTorrentFileInDotfolder(torrentFile bencoding.TorrentFile, cfg *config.
 	return os.WriteFile(savepath, data, 0644)
 }
 
-func LoadTorrentFileFromDotfolder(infoHash [20]byte, cfg *config.Config) (*bencoding.TorrentFile, error) {
-	// Convert infoHash to base64 filename
-	byteArray := []byte(infoHash[:])
-	encoded := base64.RawURLEncoding.EncodeToString(byteArray)
-	savepath := filepath.Join(cfg.DotfolderPath, encoded+".json")
 
-	data, err := os.ReadFile(savepath)
+func LoadTorrentFileFromPath(filepath string, cfg *config.Config) (*bencoding.TorrentFile, error) {
+
+	data, err := os.ReadFile(filepath)
 	if err != nil {
 		return nil, err
 	}
