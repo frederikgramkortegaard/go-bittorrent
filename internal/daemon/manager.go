@@ -42,7 +42,19 @@ func (t *TorrentManager) RemoveSession(infohash [20]byte) {
 	defer t.sessionsMu.Unlock()
 
 	delete(t.Sessions, infohash)
+}
 
+// AllSessionsComplete checks if all torrents have completed downloading.
+func (t *TorrentManager) AllSessionsComplete() bool {
+	t.sessionsMu.RLock()
+	defer t.sessionsMu.RUnlock()
+
+	for _, session := range t.Sessions {
+		if !session.PieceManager.IsComplete() {
+			return false
+		}
+	}
+	return true
 }
 
 // NewTorrentSession creates a new torrent session.

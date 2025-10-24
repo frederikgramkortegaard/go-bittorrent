@@ -1,11 +1,14 @@
-package internal
+package daemon
 
-import "go-bittorrent/internal/libnet"
+
+type PeerPieceAvailability interface {
+	HasPiece(pieceIndex int) bool
+}
 
 // SelectNextPiece picks the next piece to download from a peer (sequential strategy).
 // Returns pieceIndex and true if found, or -1 and false if nothing available.
 // This will return pieces that are in progress if they have blocks available.
-func SelectNextPiece(pm *PieceManager, peer *libnet.PeerConnection) (int, bool) {
+func SelectNextPiece(pm *PieceManager, peer PeerPieceAvailability) (int, bool) {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 

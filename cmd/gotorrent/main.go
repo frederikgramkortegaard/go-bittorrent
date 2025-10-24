@@ -73,22 +73,12 @@ func main() {
 		}
 	}
 
-	// @NOTE : This is unsafe, no mutex on session, but for this specific case we never
-	// modify sessions again, so its fine for testing.
-	isComplete := true
+	// Wait for all torrents to complete
 	for {
-
-		for _, session := range torrentManager.Sessions {
-		  if !session.PieceManager.IsComplete() {
-				isComplete = false
-			}
-		}
-
-		if isComplete {
+		allComplete := torrentManager.AllSessionsComplete()
+		if allComplete {
 			break
 		}
-
-		isComplete = true
 	}
 
 }
