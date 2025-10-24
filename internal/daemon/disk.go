@@ -16,12 +16,10 @@ type WriteRequest struct {
 	Data       []byte
 }
 
-// FileEntry represents a file in the torrent with its metadata and write state.
+// FileEntry represents a file in the torrent with its metadata.
 type FileEntry struct {
-	Path           string // Full path including outputDir and base directory
-	TotalLength    int    // Total bytes in this file
-	BytesWritten   int    // How many bytes written so far
-	BytesRemaining int    // How many bytes left to write
+	Path        string // Full path including outputDir and base directory
+	TotalLength int    // Total bytes in this file
 }
 
 // DiskManager handles persistent storage of torrent data.
@@ -36,7 +34,6 @@ type DiskManager struct {
 
 	// Write queue for async I/O
 	writeQueue chan WriteRequest
-	done       chan struct{} // Signal to stop write worker
 	wg         sync.WaitGroup // Track pending writes
 }
 
@@ -46,7 +43,6 @@ func NewDiskManager(torrentFile bencoding.TorrentFile, outputDir string, cfg *co
 		torrentFile: torrentFile,
 		outputDir:   outputDir,
 		writeQueue:  make(chan WriteRequest, cfg.DiskWriteQueueSize),
-		done:        make(chan struct{}),
 	}
 
 	// Extract file structure from torrent metadata
@@ -92,10 +88,8 @@ func (dm *DiskManager) extractFileStructure() []*FileEntry {
 		dm.torrentDir = dm.outputDir
 
 		files = append(files, &FileEntry{
-			Path:           path,
-			TotalLength:    length,
-			BytesWritten:   0,
-			BytesRemaining: length,
+			Path:        path,
+			TotalLength: length,
 		})
 
 		return files
@@ -131,10 +125,8 @@ func (dm *DiskManager) extractFileStructure() []*FileEntry {
 		length := int(*lengthObj.IntVal)
 
 		files = append(files, &FileEntry{
-			Path:           path,
-			TotalLength:    length,
-			BytesWritten:   0,
-			BytesRemaining: length,
+			Path:        path,
+			TotalLength: length,
 		})
 	}
 
@@ -142,26 +134,16 @@ func (dm *DiskManager) extractFileStructure() []*FileEntry {
 }
 
 // writeWorker processes write requests from the queue asynchronously.
+// Runs until dm.writeQueue is closed.
 func (dm *DiskManager) writeWorker() {
-	for {
-		select {
-		case <-dm.done:
-			// Drain any remaining writes before exiting
-			for len(dm.writeQueue) > 0 {
-				req := <-dm.writeQueue
-				dm.WritePiece(req.PieceIndex, req.Data)
-				dm.wg.Done()
-			}
-			return
-
-		case req := <-dm.writeQueue:
-			err := dm.WritePiece(req.PieceIndex, req.Data)
-			if err != nil {
-				fmt.Printf("ERROR writing piece %d to disk: %v\n", req.PieceIndex, err)
-			}
-			dm.wg.Done()
+	for req := range dm.writeQueue {
+		err := dm.WritePiece(req.PieceIndex, req.Data)
+		if err != nil {
+			fmt.Printf("ERROR writing piece %d to disk: %v\n", req.PieceIndex, err)
 		}
+		dm.wg.Done()
 	}
+	// Loop exits when writeQueue is closed - all queued writes have been processed
 }
 
 // QueueWrite queues a piece to be written to disk asynchronously.
@@ -307,9 +289,9 @@ func (dm *DiskManager) Flush() error {
 
 // Close closes the DiskManager and releases resources.
 func (dm *DiskManager) Close() error {
-	// Signal write worker to stop
-	close(dm.done)
-	// Wait for any remaining writes to drain
+	// Close write queue - no new writes can be queued, worker will drain and exit
+	close(dm.writeQueue)
+	// Wait for worker to process all remaining writes
 	dm.wg.Wait()
 	return nil
 }
