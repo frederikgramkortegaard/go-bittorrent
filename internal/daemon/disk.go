@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go-bittorrent/internal/bencoding"
 	"go-bittorrent/internal/config"
+	"go-bittorrent/internal/logger"
 	"os"
 	"path/filepath"
 	"sync"
@@ -37,6 +38,9 @@ type DiskManager struct {
 	wg              sync.WaitGroup // Track pending writes
 	workerRunning   bool           // Track if worker is running
 	workerMu        sync.Mutex     // Protect worker state
+
+	// Logger
+	Logger *logger.Logger
 }
 
 // NewDiskManager creates a new DiskManager for a torrent.
@@ -53,10 +57,13 @@ func NewDiskManager(torrentFile bencoding.TorrentFile, outputDir string, cfg *co
 	// Extract file structure from torrent metadata
 	dm.files = dm.extractFileStructure()
 
-	// Print file structure for debugging
-	fmt.Printf("DiskManager initialized with %d files:\n", len(dm.files))
+	// Create logger (will be set with proper component later by TorrentSession)
+	dm.Logger = logger.New().WithPrefix("DiskManager")
+
+	// Log file structure for debugging
+	dm.Logger.Info("Initialized with %d files", len(dm.files))
 	for i, file := range dm.files {
-		fmt.Printf("  File %d: %s (%d bytes)\n", i, file.Path, file.TotalLength)
+		dm.Logger.Debug("  File %d: %s (%d bytes)", i, file.Path, file.TotalLength)
 	}
 
 	return dm
@@ -153,7 +160,7 @@ func (dm *DiskManager) writeWorker() {
 				case req := <-dm.writeQueue:
 					err := dm.WritePiece(req.PieceIndex, req.Data)
 					if err != nil {
-						fmt.Printf("ERROR writing piece %d to disk: %v\n", req.PieceIndex, err)
+						dm.Logger.Error("Failed to write piece %d: %v", req.PieceIndex, err)
 					}
 					dm.wg.Done()
 				default:
@@ -164,7 +171,7 @@ func (dm *DiskManager) writeWorker() {
 		case req := <-dm.writeQueue:
 			err := dm.WritePiece(req.PieceIndex, req.Data)
 			if err != nil {
-				fmt.Printf("ERROR writing piece %d to disk: %v\n", req.PieceIndex, err)
+				dm.Logger.Error("Failed to write piece %d: %v", req.PieceIndex, err)
 			}
 			dm.wg.Done()
 		}
@@ -263,7 +270,7 @@ func (dm *DiskManager) WritePiece(index int, data []byte) error {
 			return fmt.Errorf("failed to write to file %s: %w", file.Path, err)
 		}
 
-		fmt.Printf("Wrote piece %d (%d bytes) to %s at offset %d\n",
+		dm.Logger.Debug("Wrote piece %d (%d bytes) to %s at offset %d",
 			index, n, filepath.Base(file.Path), fileWriteOffset)
 
 		dataOffset += bytesToWrite

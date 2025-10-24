@@ -121,6 +121,9 @@ func NewTorrentSession(torrentFile bencoding.TorrentFile, cfg *config.Config) (*
 	// Create logger for this session
 	session.Logger = logger.New().WithComponent(session)
 
+	// Set DiskManager logger with session context
+	session.DiskManager.Logger = session.Logger.WithPrefix("Disk")
+
 	return session, nil
 }
 
