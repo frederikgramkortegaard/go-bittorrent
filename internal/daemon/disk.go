@@ -31,17 +31,23 @@ type DiskManager struct {
 	// File structure extracted from torrent metadata
 	files []*FileEntry
 
-	// Write queue for async I/O
-	writeQueue chan WriteRequest
-	wg         sync.WaitGroup // Track pending writes
+	// Write queue for async I/O (only used during downloads)
+	writeQueue      chan WriteRequest
+	writeWorkerDone chan struct{} // Signal to stop write worker
+	wg              sync.WaitGroup // Track pending writes
+	workerRunning   bool           // Track if worker is running
+	workerMu        sync.Mutex     // Protect worker state
 }
 
-// NewDiskManager creates a new DiskManager for a torrent and starts the write worker.
+// NewDiskManager creates a new DiskManager for a torrent.
+// The write worker is NOT started by default - call StartWriteWorker() when needed.
 func NewDiskManager(torrentFile bencoding.TorrentFile, outputDir string, cfg *config.Config) *DiskManager {
 	dm := &DiskManager{
-		torrentFile: torrentFile,
-		outputDir:   outputDir,
-		writeQueue:  make(chan WriteRequest, cfg.DiskWriteQueueSize),
+		torrentFile:     torrentFile,
+		outputDir:       outputDir,
+		writeQueue:      make(chan WriteRequest, cfg.DiskWriteQueueSize),
+		writeWorkerDone: make(chan struct{}),
+		workerRunning:   false,
 	}
 
 	// Extract file structure from torrent metadata
@@ -52,9 +58,6 @@ func NewDiskManager(torrentFile bencoding.TorrentFile, outputDir string, cfg *co
 	for i, file := range dm.files {
 		fmt.Printf("  File %d: %s (%d bytes)\n", i, file.Path, file.TotalLength)
 	}
-
-	// Start write worker goroutine
-	go dm.writeWorker()
 
 	return dm
 }
@@ -133,16 +136,39 @@ func (dm *DiskManager) extractFileStructure() []*FileEntry {
 }
 
 // writeWorker processes write requests from the queue asynchronously.
-// Runs until dm.writeQueue is closed.
+// Runs until writeWorkerDone is closed or writeQueue is closed.
 func (dm *DiskManager) writeWorker() {
-	for req := range dm.writeQueue {
-		err := dm.WritePiece(req.PieceIndex, req.Data)
-		if err != nil {
-			fmt.Printf("ERROR writing piece %d to disk: %v\n", req.PieceIndex, err)
+	defer func() {
+		dm.workerMu.Lock()
+		dm.workerRunning = false
+		dm.workerMu.Unlock()
+	}()
+
+	for {
+		select {
+		case <-dm.writeWorkerDone:
+			// Shutdown signal - drain remaining writes and exit
+			for {
+				select {
+				case req := <-dm.writeQueue:
+					err := dm.WritePiece(req.PieceIndex, req.Data)
+					if err != nil {
+						fmt.Printf("ERROR writing piece %d to disk: %v\n", req.PieceIndex, err)
+					}
+					dm.wg.Done()
+				default:
+					// Queue empty, exit
+					return
+				}
+			}
+		case req := <-dm.writeQueue:
+			err := dm.WritePiece(req.PieceIndex, req.Data)
+			if err != nil {
+				fmt.Printf("ERROR writing piece %d to disk: %v\n", req.PieceIndex, err)
+			}
+			dm.wg.Done()
 		}
-		dm.wg.Done()
 	}
-	// Loop exits when writeQueue is closed - all queued writes have been processed
 }
 
 // QueueWrite queues a piece to be written to disk asynchronously.
@@ -286,12 +312,43 @@ func (dm *DiskManager) Flush() error {
 	return nil
 }
 
-// Close closes the DiskManager and releases resources.
-func (dm *DiskManager) Close() error {
-	// Close write queue - no new writes can be queued, worker will drain and exit
-	close(dm.writeQueue)
-	// Wait for worker to process all remaining writes
+// StartWriteWorker starts the background write worker.
+// Safe to call multiple times - only starts if not already running.
+func (dm *DiskManager) StartWriteWorker() {
+	dm.workerMu.Lock()
+	defer dm.workerMu.Unlock()
+
+	if dm.workerRunning {
+		return // Already running
+	}
+
+	dm.workerRunning = true
+	go dm.writeWorker()
+}
+
+// StopWriteWorker stops the background write worker and waits for pending writes.
+// Call this when download completes but you still want to use DiskManager for reads.
+func (dm *DiskManager) StopWriteWorker() error {
+	dm.workerMu.Lock()
+	if !dm.workerRunning {
+		dm.workerMu.Unlock()
+		return nil // Already stopped
+	}
+	dm.workerMu.Unlock()
+
+	// Signal worker to stop
+	close(dm.writeWorkerDone)
+	// Wait for all pending writes to complete
 	dm.wg.Wait()
+
+	return nil
+}
+
+// Close closes the DiskManager and releases all resources.
+// Call this when the entire TorrentSession is being removed.
+func (dm *DiskManager) Close() error {
+	// Stop write worker if running
+	dm.StopWriteWorker()
 	return nil
 }
 

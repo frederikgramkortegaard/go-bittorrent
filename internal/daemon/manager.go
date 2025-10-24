@@ -316,6 +316,9 @@ func (ts *TorrentSession) InitiateDownloadSequence(torrentManager *TorrentManage
 		}
 	}
 
+	// Start write worker for this download sequence
+	ts.DiskManager.StartWriteWorker()
+
 	// Calculate total size for tracker request
 	totalSize := uint64(ts.PieceManager.TotalSize())
 	torrentFile := ts.TorrentFile
@@ -684,6 +687,9 @@ func (ts *TorrentSession) Complete() error {
 
 	// Stop all peer read/download loops
 	ts.StopPeerLoops()
+
+	// Stop write worker (but keep DiskManager alive for seeding/reads)
+	ts.DiskManager.StopWriteWorker()
 
 	ts.IsSeedMature = true // Mark as ready to seed
 
