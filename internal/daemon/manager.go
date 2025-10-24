@@ -5,11 +5,11 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"go-bittorrent/internal"
 	"go-bittorrent/internal/bencoding"
 	"go-bittorrent/internal/config"
 	"go-bittorrent/internal/libnet"
 	"go-bittorrent/internal/logger"
-	"math/bits"
 	"sync"
 	"time"
 )
@@ -157,20 +157,38 @@ func (t *TorrentManager) StartTorrentSession(torrentFile bencoding.TorrentFile) 
 		return nil, ErrNoPieceInfo
 	}
 
-	if torrentFile.Bitfield != nil && len(torrentFile.Bitfield) != pieceInfo.TotalPieces {
-		return nil, ErrBitfieldLengthMismatch
-	}
-
-	// Calculate how many pieces we already have and that are fully available
+	// Validate or initialize bitfield
+	expectedBitfieldLen := (pieceInfo.TotalPieces + 7) / 8 // Round up to nearest byte
 	setBits := 0
+
 	if torrentFile.Bitfield != nil {
-		for _, b := range torrentFile.Bitfield {
-			setBits += bits.OnesCount8(b)
+		// Bitfield exists - validate length
+		if len(torrentFile.Bitfield) != expectedBitfieldLen {
+			return nil, fmt.Errorf("bitfield has incorrect length: got %d bytes, expected %d bytes",
+				len(torrentFile.Bitfield), expectedBitfieldLen)
 		}
+
+		// Initialize PieceManager with already-completed pieces from bitfield
+		for i := 0; i < pieceInfo.TotalPieces; i++ {
+			byteIndex := i / 8
+			bitOffset := uint(i % 8)
+			hasPiece := (torrentFile.Bitfield[byteIndex] >> (7 - bitOffset)) & 1 == 1
+
+			if hasPiece {
+				setBits++
+				// Mark this piece as complete in PieceManager (it's already on disk)
+				session.PieceManager.MarkPieceCompleteFromBitfield(i)
+			}
+		}
+
+		session.Logger.Info("Resuming with %d/%d pieces already downloaded", setBits, pieceInfo.TotalPieces)
+	} else {
+		// No bitfield - initialize empty one for fresh download
+		torrentFile.Bitfield = make([]byte, expectedBitfieldLen)
 	}
 
 	// We have at least a single fully completed and verified piece of this torrent on-disk
-	session.IsSeedMature = torrentFile.Bitfield != nil && setBits > 0
+	session.IsSeedMature = setBits > 0
 
 	// Initiate download if required
 	if torrentFile.Bitfield == nil || setBits < pieceInfo.TotalPieces {
@@ -183,6 +201,7 @@ func (t *TorrentManager) StartTorrentSession(torrentFile bencoding.TorrentFile) 
 			return session, err
 		}
 	}
+
 	// Note: If already have all pieces, no download needed - session is ready for seeding
 
 	// @NOTE : If we don't already have all of the torrent, we setup a download loop, it is not
@@ -303,6 +322,12 @@ func (ts *TorrentSession) PeerReadLoop(ctx context.Context, peer *libnet.PeerCon
 				// Piece is complete, verify it
 				if ts.PieceManager.VerifyPiece(receivedPieceIndex) {
 					ts.Logger.Info("Piece %d verified successfully", receivedPieceIndex)
+
+					// Mark piece complete in bitfield and persist to disk
+					err := ts.MarkPieceCompleteAndPersist(receivedPieceIndex)
+					if err != nil {
+						ts.Logger.Error("Failed to persist piece completion: %v", err)
+					}
 
 					// Queue piece for writing to disk
 					pieceData := ts.PieceManager.GetPieceData(receivedPieceIndex)
@@ -728,6 +753,42 @@ func (ts *TorrentSession) Complete() error {
 	}
 	ts.doneMu.Unlock()
 
+	return nil
+}
+
+// MarkPieceCompleteAndPersist updates the bitfield to mark a piece as complete
+// and persists the updated TorrentFile to disk for resume capability.
+func (ts *TorrentSession) MarkPieceCompleteAndPersist(pieceIndex int) error {
+	// Initialize bitfield if it doesn't exist
+	if ts.TorrentFile.Bitfield == nil {
+		// Calculate bitfield size: need one bit per piece, rounded up to bytes
+		numPieces := ts.PieceManager.TotalPieces
+		bitfieldSize := (numPieces + 7) / 8 // Round up to nearest byte
+		ts.TorrentFile.Bitfield = make([]byte, bitfieldSize)
+	}
+
+	// Set the bit for this piece
+	byteIndex := pieceIndex / 8
+	bitOffset := uint(pieceIndex % 8)
+	ts.TorrentFile.Bitfield[byteIndex] |= (1 << (7 - bitOffset))
+
+	// Persist the updated torrent file to disk
+	err := internal.StoreTorrentFileInDotfolder(ts.TorrentFile, ts.Config)
+	if err != nil && err != internal.ErrFileAlreadyExists {
+		ts.Logger.Error("Failed to persist bitfield update: %v", err)
+		return err
+	}
+
+	// If file exists, we need to update it (overwrite)
+	if err == internal.ErrFileAlreadyExists {
+		err = internal.UpdateTorrentFileInDotfolder(ts.TorrentFile, ts.Config)
+		if err != nil {
+			ts.Logger.Error("Failed to update bitfield in dotfolder: %v", err)
+			return err
+		}
+	}
+
+	ts.Logger.Debug("Marked piece %d complete in bitfield and persisted", pieceIndex)
 	return nil
 }
 

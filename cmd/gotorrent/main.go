@@ -51,6 +51,34 @@ func main() {
 	// Create the torrent manager with the shared client
 	torrentManager := daemon.NewTorrentManager(client)
 
+	// Scan Dotfolder for all torrent files and start their sessions
+	files, err := os.ReadDir(cfg.DotfolderPath)
+	if err != nil {
+		log.Error("%v", err)
+		os.Exit(1)
+	}
+
+	for _, f := range files {
+		fmt.Println(f.Name())
+		torrentFile, err := internal.LoadTorrentFileFromPath(
+			filepath.Join(cfg.DotfolderPath, f.Name()),
+			cfg,
+		)
+
+		if err != nil || torrentFile == nil {
+			log.Error("Failed to load torrent file from disk: %s, %v", f.Name(), err)
+			continue
+		}
+
+		log.Info("loaded torrent file %s from dotfolder, starting session", f.Name())
+		_, err = torrentManager.StartTorrentSession(*torrentFile)
+		if err != nil {
+			log.Error("Error starting torrent session: %v", err)
+			os.Exit(1)
+		}
+
+	}
+
 	// If a torrent file was provided as argument, start it automatically
 	if flag.NArg() >= 1 {
 		filePath := flag.Arg(0)
@@ -68,6 +96,10 @@ func main() {
 		}
 
 		err = internal.StoreTorrentFileInDotfolder(torrent, cfg)
+
+		if err != internal.ErrFileAlreadyExists{
+			
+
 		if err != nil {
 			log.Error("Error storing torrent file on disk: %v", err)
 			os.Exit(1)
@@ -79,36 +111,7 @@ func main() {
 			log.Error("Error starting torrent session: %v", err)
 			os.Exit(1)
 		}
-	} else {
-
-		// Scan Dotfolder for all torrent files and start their sessions
-		files, err := os.ReadDir(cfg.DotfolderPath)
-		if err != nil {
-			log.Error("%v", err)
-			os.Exit(1)
 		}
-
-		for _, f := range files {
-			fmt.Println(f.Name())
-			torrentFile, err := internal.LoadTorrentFileFromPath(
-				filepath.Join(cfg.DotfolderPath, f.Name()),
-				cfg,
-			)
-
-			if err != nil || torrentFile == nil {
-				log.Error("Failed to load torrent file from disk: %s, %v", f.Name(), err)
-				continue
-			}
-
-			log.Info("loaded torrent file %s from dotfolder, starting session", f.Name())
-			_, err = torrentManager.StartTorrentSession(*torrentFile)
-			if err != nil {
-				log.Error("Error starting torrent session: %v", err)
-				os.Exit(1)
-			}
-
-		}
-
 	}
 
 	// Wait for all torrents to complete (blocks efficiently using channels)

@@ -13,6 +13,7 @@ type Piece struct {
 	TotalBlocks int32          // How many blocks in this piece
 	Blocks      map[int][]byte // blockIndex -> block data
 	Complete    bool           // Set to true once all blocks have been downloaded
+	Verified    bool           // Set to true once piece passed SHA1 verification (persisted state)
 }
 
 type PieceManager struct {
@@ -119,9 +120,10 @@ func (pm *PieceManager) InitializePiece(index int, blockSize int32) {
 }
 
 // VerifyPiece checks if the piece's SHA1 hash matches the expected hash.
+// Sets Verified=true if verification passes.
 func (pm *PieceManager) VerifyPiece(pieceIndex int) bool {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
 
 	piece := pm.Pieces[pieceIndex]
 	if piece == nil || !piece.Complete {
@@ -136,7 +138,13 @@ func (pm *PieceManager) VerifyPiece(pieceIndex int) bool {
 
 	// Calculate SHA1 hash
 	hash := sha1.Sum(data)
-	return hash == piece.Hash
+	verified := hash == piece.Hash
+
+	if verified {
+		piece.Verified = true
+	}
+
+	return verified
 }
 
 func (pm *PieceManager) RemovePiece(pieceIndex int) {
@@ -147,7 +155,7 @@ func (pm *PieceManager) RemovePiece(pieceIndex int) {
 	delete(pm.Pieces, pieceIndex)
 }
 
-// IsPieceComplete checks if all blocks have been downloaded for a piece.
+// IsPieceComplete checks if a piece has been verified.
 func (pm *PieceManager) IsPieceComplete(pieceIndex int) bool {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
@@ -157,16 +165,16 @@ func (pm *PieceManager) IsPieceComplete(pieceIndex int) bool {
 		return false
 	}
 
-	return piece.Complete
+	return piece.Verified
 }
 
-// IsPieceInProgress checks if a piece has been started but not completed.
+// IsPieceInProgress checks if a piece has been started but not verified.
 func (pm *PieceManager) IsPieceInProgress(pieceIndex int) bool {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 
 	piece := pm.Pieces[pieceIndex]
-	return piece != nil && !piece.Complete
+	return piece != nil && !piece.Verified
 }
 
 // GetPieceData assembles and returns the complete piece data.
@@ -202,6 +210,36 @@ func (pm *PieceManager) ClearPieceData(pieceIndex int) {
 
 	// Clear the blocks map to free memory
 	piece.Blocks = nil
+}
+
+// MarkPieceCompleteFromBitfield marks a piece as complete without block data.
+// This is used when resuming a download - we know the piece is on disk, but we don't
+// have the blocks in memory. We create a minimal Piece entry marked as complete.
+func (pm *PieceManager) MarkPieceCompleteFromBitfield(pieceIndex int) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	// Don't overwrite if piece already exists
+	if pm.Pieces[pieceIndex] != nil {
+		return
+	}
+
+	// Determine piece length
+	pieceLen := pm.PieceLength
+	if pieceIndex == pm.TotalPieces-1 {
+		pieceLen = pm.LastPieceLength
+	}
+
+	// Create a minimal piece entry marked as verified (no block data needed)
+	pm.Pieces[pieceIndex] = &Piece{
+		Index:       pieceIndex,
+		Length:      pieceLen,
+		BlockSize:   pm.BlockSize,
+		TotalBlocks: (pieceLen + pm.BlockSize - 1) / pm.BlockSize,
+		Blocks:      nil, // No block data - piece is on disk
+		Complete:    true,
+		Verified:    true, // Already on disk and in bitfield = verified
+	}
 }
 
 // HasBlock checks if we have received a specific block.
@@ -249,7 +287,7 @@ func (pm *PieceManager) BytesRemaining() int64 {
 
 	var downloaded int64
 	for _, piece := range pm.Pieces {
-		if piece.Complete {
+		if piece.Verified {
 			downloaded += int64(piece.Length)
 		}
 	}
@@ -257,14 +295,14 @@ func (pm *PieceManager) BytesRemaining() int64 {
 	return pm.TotalSize() - downloaded
 }
 
-// CompletedPieces returns the number of completed pieces.
+// CompletedPieces returns the number of verified pieces.
 func (pm *PieceManager) CompletedPieces() int {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 
 	count := 0
 	for _, piece := range pm.Pieces {
-		if piece.Complete {
+		if piece.Verified {
 			count++
 		}
 	}
@@ -276,13 +314,13 @@ func (pm *PieceManager) IsComplete() bool {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 
-	// Count completed pieces inline to avoid double-locking
+	// Count verified pieces inline to avoid double-locking
 	count := 0
 	for _, piece := range pm.Pieces {
-		if piece.Complete {
+		if piece.Verified {
 			count++
 		}
 	}
 
-	return len(pm.Pieces) == pm.TotalPieces && count == pm.TotalPieces
+	return count == pm.TotalPieces
 }

@@ -14,9 +14,9 @@ func SelectNextPiece(pm *PieceManager, peer PeerPieceAvailability) (int, bool) {
 
 	// Sequential strategy: just go 0, 1, 2, 3...
 	for pieceIndex := 0; pieceIndex < pm.TotalPieces; pieceIndex++ {
-		// Already have this piece complete?
+		// Already have this piece verified?
 		piece := pm.Pieces[pieceIndex]
-		if piece != nil && piece.Complete {
+		if piece != nil && piece.Verified {
 			continue
 		}
 

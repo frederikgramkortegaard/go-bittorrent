@@ -45,6 +45,21 @@ func StoreTorrentFileInDotfolder(torrentFile bencoding.TorrentFile, cfg *config.
 	return os.WriteFile(savepath, data, 0644)
 }
 
+// UpdateTorrentFileInDotfolder updates an existing torrent file in the dotfolder.
+// This is used to persist bitfield updates during download for resume capability.
+func UpdateTorrentFileInDotfolder(torrentFile bencoding.TorrentFile, cfg *config.Config) error {
+	// Use the infoHash as the filename, base64 encoded for filesystem safety
+	byteArray := []byte(torrentFile.InfoHash[:])
+	encoded := base64.RawURLEncoding.EncodeToString(byteArray)
+	savepath := filepath.Join(cfg.DotfolderPath, encoded+".json")
+
+	// Marshal and write (overwrite existing file)
+	data, err := json.MarshalIndent(torrentFile, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(savepath, data, 0644)
+}
 
 func LoadTorrentFileFromPath(filepath string, cfg *config.Config) (*bencoding.TorrentFile, error) {
 
