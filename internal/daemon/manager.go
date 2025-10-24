@@ -382,20 +382,12 @@ func (ts *TorrentSession) PeerHealthLoop(torrentManager *TorrentManager, ctx con
 	defer ticker.Stop()
 
 	for {
-		// Check if doneChan is closed (only if it's not nil)
-		if ts.doneChan != nil {
-			select {
-			case <-ts.doneChan:
-				ts.Logger.Info("Peer health loop stopping - torrent complete")
-				return
-			default:
-				// doneChan still open, continue
-			}
-		}
-
 		select {
 		case <-ctx.Done():
 			ts.Logger.Info("Peer health loop shutting down")
+			return
+		case <-ts.doneChan:
+			ts.Logger.Info("Peer health loop stopping - torrent complete")
 			return
 		case <-ticker.C:
 			// Check if we need more peers
