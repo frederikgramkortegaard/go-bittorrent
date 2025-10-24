@@ -168,6 +168,9 @@ func (t *TorrentManager) StartTorrentSession(torrentFile bencoding.TorrentFile) 
 				len(torrentFile.Bitfield), expectedBitfieldLen)
 		}
 
+
+		// @TODO : Verify pieces exist on-disk and SHA checks
+
 		// Initialize PieceManager with already-completed pieces from bitfield
 		for i := 0; i < pieceInfo.TotalPieces; i++ {
 			byteIndex := i / 8
@@ -471,7 +474,33 @@ func (ts *TorrentSession) PeerHealthLoop(torrentManager *TorrentManager, ctx con
 			activePeers := len(ts.Connections)
 			ts.connectionsMu.RUnlock()
 
-			ts.Logger.Info("Peer health check - Active peers: %d", activePeers)
+			completedPieces := ts.PieceManager.CompletedPieces()
+			totalPieces := ts.PieceManager.TotalPieces
+
+			// Count peer states
+			var unchoked, active, failed, disconnected int
+			ts.connectionsMu.RLock()
+			for _, conn := range ts.Connections {
+				status := conn.GetStatus()
+				if status == libnet.StatusActive && !conn.PeerChoking.Load() {
+					unchoked++
+				}
+				if status == libnet.StatusActive {
+					active++
+				}
+				if status == libnet.StatusFailed {
+					failed++
+				}
+				if status == libnet.StatusDisconnected {
+					disconnected++
+				}
+			}
+			ts.connectionsMu.RUnlock()
+
+			ts.Logger.Info("Health check - Total peers: %d (Active: %d, Unchoked: %d, Failed: %d, Disconnected: %d), Progress: %d/%d pieces (%.1f%%)",
+				activePeers, active, unchoked, failed, disconnected, completedPieces, totalPieces, float64(completedPieces)*100.0/float64(totalPieces))
+
+			if activePeers >= 10 {continue}
 
 			// Request fresh peers from tracker
 			totalSize := uint64(ts.PieceManager.TotalSize())
@@ -580,6 +609,9 @@ func (ts *TorrentSession) ConnectToPeers(client *libnet.Client, peers []bencodin
 
 			pc.Logger.Info("Handshake successful")
 
+			// Set read deadline for first message (bitfield expected within 10 seconds)
+			conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+
 			// Read first message (should be bitfield, but might be something else)
 			msg, err := libnet.ReadMessage(pc.Connection)
 			if err != nil {
@@ -589,6 +621,9 @@ func (ts *TorrentSession) ConnectToPeers(client *libnet.Client, peers []bencodin
 				ts.AddConnection(pc)
 				return
 			}
+
+			// Clear read deadline for subsequent messages (handled by PeerReadLoop)
+			conn.SetReadDeadline(time.Time{})
 
 			// Handle the message
 			if msg.ID != nil && *msg.ID == libnet.MsgBitfield {
@@ -661,8 +696,16 @@ func (ts *TorrentSession) PeerDownloadLoop(ctx context.Context, peer *libnet.Pee
 			// Select next piece to download from this peer
 			pieceIndex, ok := SelectNextPiece(ts.PieceManager, peer)
 			if !ok {
-				// No pieces available, release the slot and wait
+				// No pieces available from this peer
 				<-peer.RequestChan
+
+				// Check if torrent is complete
+				if ts.PieceManager.IsComplete() {
+					peer.Logger.Info("All pieces complete! Torrent should be finishing...")
+					return
+				}
+
+				peer.Logger.Debug("No pieces available from this peer, waiting...")
 				select {
 				case <-ctx.Done():
 					return
@@ -802,7 +845,10 @@ func (ts *TorrentSession) AddConnection(c *libnet.PeerConnection) {
 func (ts *TorrentSession) RemoveConnection(address string) {
 	ts.connectionsMu.Lock()
 	defer ts.connectionsMu.Unlock()
-	delete(ts.Connections, address)
+	if conn, exists := ts.Connections[address]; exists {
+		ts.Logger.Info("Removing peer %s (Status: %s)", address, conn.GetStatus())
+		delete(ts.Connections, address)
+	}
 }
 
 // GetActivePeers returns all peers in the connections map that have an active TCP connection.

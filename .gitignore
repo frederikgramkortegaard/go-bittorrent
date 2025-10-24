@@ -32,6 +32,7 @@ vendor/
 *~
 
 examples/*
+.go-bittorrent/*
 
 # Environment variables
 .env
