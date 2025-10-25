@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"go-bittorrent/internal"
@@ -115,6 +116,9 @@ func main() {
 	}
 
 	// Wait for all torrents to complete (blocks efficiently using channels)
-	torrentManager.WaitForCompletion()
+	if err := torrentManager.WaitForCompletion(context.Background()); err != nil {
+		log.Error("Error waiting for torrents: %v", err)
+		os.Exit(1)
+	}
 
 }

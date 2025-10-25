@@ -56,16 +56,16 @@ func (t *TorrentManager) AllSessionsComplete() bool {
 	return true
 }
 
-// WaitForCompletion blocks until all torrent sessions have completed.
+// WaitForCompletion blocks until all torrent sessions have completed or context is cancelled.
 // Uses channels to wait efficiently (no busy-waiting).
-func (t *TorrentManager) WaitForCompletion() {
+func (t *TorrentManager) WaitForCompletion(ctx context.Context) error {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
 		// Check if all complete
 		if t.AllSessionsComplete() {
-			return
+			return nil
 		}
 
 		// Get a done channel to wait on
@@ -79,17 +79,23 @@ func (t *TorrentManager) WaitForCompletion() {
 		}
 		t.sessionsMu.RUnlock()
 
-		// If we found a channel, wait on it (or timeout)
+		// If we found a channel, wait on it (or timeout/cancellation)
 		if waitChan != nil {
 			select {
 			case <-waitChan:
 				// A session completed, loop again to check others
+			case <-ctx.Done():
+				return ctx.Err()
 			case <-ticker.C:
 				// Periodic check in case of race
 			}
 		} else {
 			// No active downloads, just wait a bit
-			<-ticker.C
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-ticker.C:
+			}
 		}
 	}
 }
@@ -291,8 +297,10 @@ func (ts *TorrentSession) PeerReadLoop(ctx context.Context, peer *libnet.PeerCon
 			peer.PeerChoking.Store(true)
 
 		case libnet.MsgHave:
-			// @TODO : Not yet implemented - for now we're only downloading and we dont really
-			// care about pareto efficiency
+			pieceIndex := int32(binary.BigEndian.Uint32(msg.Payload))
+			peer.SetBitInBitField(pieceIndex)
+			peer.Logger.Debug("Received HAVE message: %d, len %d", pieceIndex, len(msg.Payload))
+
 
 		case libnet.MsgPiece:
 			// Parse PIECE message: <index><begin><block data>
@@ -760,19 +768,24 @@ func (ts *TorrentSession) StopPeerLoops() {
 	}
 }
 
+// signalDone closes doneChan to broadcast completion to all waiters.
+// Safe to call multiple times (idempotent).
+func (ts *TorrentSession) signalDone(err error) {
+	ts.doneMu.Lock()
+	defer ts.doneMu.Unlock()
+	if !ts.doneSignaled {
+		ts.doneErr = err
+		close(ts.doneChan)
+		ts.doneSignaled = true
+	}
+}
+
 // Cancel stops the torrent session and signals cancellation.
 // Use this when the user manually stops a torrent.
 func (ts *TorrentSession) Cancel() {
 	ts.StopPeerLoops()
-
-	// Signal cancellation via doneChan
-	ts.doneMu.Lock()
-	if !ts.doneSignaled {
-		ts.doneErr = fmt.Errorf("cancelled")
-		close(ts.doneChan)
-		ts.doneSignaled = true
-	}
-	ts.doneMu.Unlock()
+	ts.DiskManager.StopWriteWorker()
+	ts.signalDone(fmt.Errorf("cancelled"))
 }
 
 // Complete handles torrent completion - stops peer connections, marks ready for seeding,
@@ -782,19 +795,11 @@ func (ts *TorrentSession) Complete() error {
 	ts.Logger.Info("Torrent complete, all %d pieces acquired", ts.PieceManager.CompletedPieces())
 
 	ts.StopPeerLoops()
-
-	// Stop write worker (but keep DiskManager alive for seeding/reads)
 	ts.DiskManager.StopWriteWorker()
 
-	ts.IsSeedMature = true // Mark as ready to seed
+	ts.IsSeedMature = true
 
-	// Signal successful completion via doneChan (doneErr stays nil)
-	ts.doneMu.Lock()
-	if !ts.doneSignaled {
-		close(ts.doneChan)
-		ts.doneSignaled = true
-	}
-	ts.doneMu.Unlock()
+	ts.signalDone(nil) // nil = success
 
 	return nil
 }

@@ -80,6 +80,30 @@ func (pc *PeerConnection) SetBitfield(bitfield []byte) {
 	pc.Bitfield = bitfield
 }
 
+// SetBitInBitfield marks a specific piece as available in the peer's bitfield (thread-safe).
+// Used when receiving HAVE messages from the peer.
+func (pc *PeerConnection) SetBitInBitfield(pieceIndex int) {
+	pc.bitfieldMu.Lock()
+	defer pc.bitfieldMu.Unlock()
+
+	if pc.Bitfield == nil {
+		return
+	}
+
+	if pieceIndex < 0 {
+		return
+	}
+
+	byteIndex := pieceIndex / 8
+	bitOffset := uint(pieceIndex % 8)
+
+	if byteIndex >= len(pc.Bitfield) {
+		return
+	}
+
+	pc.Bitfield[byteIndex] |= (1 << (7 - bitOffset))
+}
+
 // HasPiece checks if the peer has a specific piece based on their bitfield.
 func (pc *PeerConnection) HasPiece(pieceIndex int) bool {
 	pc.bitfieldMu.RLock()
