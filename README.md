@@ -54,7 +54,6 @@ The TUI shows active torrents on the left with download progress, peer counts, a
 - Pipelined block requests per peer connection
 - Concurrent peer management with connection pooling
 - Multi-file torrent support
-- TUI built with Bubbletea and live log tailing
 
 ## TODO
 
