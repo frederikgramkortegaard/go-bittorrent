@@ -35,17 +35,6 @@ Start with a torrent file or launch the TUI and add torrents interactively:
 -log-level string  Log level: debug, info, warn, error (default "info")
 ```
 
-## Interface
-
-The TUI shows active torrents on the left with download progress, peer counts, and status. Live logs appear on the right. All logging output goes to `go-bittorrent.log`.
-
-**Controls:**
-- `n` - Add torrent via file picker
-- `↑/↓` or `j/k` - Navigate sessions
-- `enter` - Open selected torrent in file explorer
-- `d` - Stop selected torrent
-- `q` - Quit
-
 ## Implementation
 
 - Tracker communication with HTTP GET announcements
