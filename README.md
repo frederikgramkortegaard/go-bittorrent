@@ -57,7 +57,6 @@ The TUI shows active torrents on the left with download progress, peer counts, a
 
 ## TODO
 
-- Session persistence (resume incomplete downloads from metafile)
 - DHT support for trackerless torrents
 - Magnet link support
 - Upload rate limiting and ratio management
